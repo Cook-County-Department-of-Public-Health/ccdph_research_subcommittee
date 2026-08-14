@@ -47,6 +47,7 @@ library("openxlsx")   # read.xlsx
 library("dbplyr")     # SQL translation backend for dplyr tbl()
 library("sf")         # spatial operations (st_as_sf, st_join, st_drop_geometry)
 library("arcgislayers")
+library("tigris")     # county boundaries (TIGER/Line), used as a spatial filter
 library("ggplot2")
 library("purrr")
 ```
@@ -177,6 +178,10 @@ Each mapped service area is linked to its system's federal Public Water System I
 Boundaries were retrieved programmatically via the dataset's ArcGIS REST Feature Service and clipped to the Cook County study area. Because the dataset combines authoritative and EPA-modeled boundaries, systems were flagged by boundary source (state/utility-sourced vs. EPA-modeled) to account for potential differences in spatial accuracy across the study area; this distinction is reported where relevant to interpretation of findings.
 
 ```{r}
+#| label: get-cook-county-boundary-data
+#| eval: true
+#| error: true
+
 ## ---------------------------------------------------------------------------
 ## Download EPA Public Water System (Community Water System) Service Area
 ## Boundaries for Cook County, IL from the national ArcGIS FeatureServer
@@ -318,6 +323,7 @@ glimpse(st_drop_geometry(cook_cws))
 
 # Save as a GeoPackage (preferred - single file, preserves types) and Shapefile
 # (for compatibility with older GIS software) into /mnt/user-data/outputs
+dir.create("data/spatial", showWarnings = FALSE, recursive = TRUE)
 st_write(cook_cws, "data/spatial/cook_county_water_system_boundaries.gpkg",
           delete_dsn = TRUE)
 st_write(cook_cws, "data/spatial/cook_county_water_system_boundaries.shp",
