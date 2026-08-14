@@ -1,0 +1,770 @@
+---
+title: "Drinking Water and Environmental Justice"
+subtitle: "<i>Challenges and opportunities for improving drinking water quality in suburban Cook County</i>"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+  
+format:
+  html:
+    theme: [journal, "databrief.scss"]
+    favicon: "https://cookcountypublichealth.org/wp-content/uploads/2018/12/cropped-favicon-32x32.png"
+    code-tools: false  
+    code-fold: false
+    echo: true
+    eval: false
+    warning: false
+    title-block-banner: true
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    include-in-header: "header.html"
+    reference-location: document
+    fig-cap-location: top
+    fig-height: 2.75
+    fontsize: 0.9em
+    interlinespace: -0.75em
+    embed-resources: true
+bibliography: "references.bib"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+#| label: activate R packages
+#| eval: true
+#| echo: false
+
+library("dplyr")      # data wrangling
+library("tidyr")      # drop_na
+library("data.table") # rbindlist, setnames
+library("DT")         # interactive HTML tables
+library("stringr")    # str_count, str_glue
+library("readr")      # read_fwf, fwf_positions
+library("odbc")       # SQL Server ODBC driver
+library("DBI")        # database interface (dbConnect, dbWriteTable, etc.)
+library("keyring")    # encrypted credential storage
+library("epitools")   # epidate
+library("openxlsx")   # read.xlsx
+library("dbplyr")     # SQL translation backend for dplyr tbl()
+library("sf")         # spatial operations (st_as_sf, st_join, st_drop_geometry)
+library("arcgislayers")
+library("ggplot2")
+library("purrr")
+```
+
+# Background
+## Literature Review
+
+Urban water infrastructure in the United States is aging, underfunded, and
+increasingly recognized as a site of environmental injustice. Erban and
+Walker's [-@erban2019] systems analysis of Chicago's water infrastructure
+provides essential context for understanding the region's challenges: the
+city's Department of Water Management (DWM) supplies not only Chicago but
+125 suburban municipalities with water drawn from Lake Michigan, connecting
+suburban Cook County's water security directly to the city's own
+infrastructure decisions and financial health [@erban2019]. Their analysis
+shows that DWM revenues—drawn almost entirely from water and sewer fees—have
+increasingly been diverted to non-water municipal obligations, including
+pension deficits, even as capital investment needs (such as lead service
+line replacement) remain substantial [@erban2019]. This entanglement of
+"Enterprise" water revenues with general municipal finance, combined with
+documented cases of suburbs falling into arrears on water payments to the
+city [@erban2019], illustrates a structural funding vulnerability that
+likely compounds the difficulty of remediating lead infrastructure in
+lower-income suburban systems that lack independent capital capacity.
+
+This funding vulnerability is now operating within a newly tightened
+regulatory environment. Illinois's Lead Service Line Replacement and
+Notification Act, codified at 415 ILCS 5/17.12 and effective January 1,
+2022, mandates that every community water supply in the state—including
+suburban Cook County municipalities—fully replace all lead service lines,
+with no partial replacements permitted except for a narrow class of
+very high-volume utilities [@illinois2021]. The Act imposes a phased
+compliance structure: municipalities were required to submit initial and
+updated service line inventories between 2022 and 2024, and must submit
+replacement plans culminating in a final comprehensive plan due April 15,
+2027, after which statutory replacement deadlines are scaled to the number
+of lead lines a system reports, in practice extending compliance for
+larger systems by decades [@illinois2021]. Because the Act funds
+replacement in part through a fee assessed on billed water usage collected
+by the community water supplies themselves, and routes broader support
+through the state-administered Lead Service Line Replacement Fund
+[@illinois2021], smaller or lower-income suburban systems—those Balazs and
+Ray [-@balazs2014] identify as constrained by low technical, managerial,
+and financial (TMF) capacity—may struggle both to generate adequate local
+fee revenue and to compete for state funds requiring the very
+administrative capacity they lack. This tension is sharpened by the
+federal Lead and Copper Rule Improvements (LCRI), finalized by EPA in
+October 2024, which generally requires replacement within 10 years—a
+substantially shorter window than Illinois's own statutory timeline
+permits for many systems [@illinois2021]. For suburban Cook County water
+agencies serving economically challenged populations, this means the more
+protective federal deadline, rather than the more forgiving state
+schedule, is likely to function as the binding constraint, even as these
+same agencies face the structural revenue diversion pressures documented
+by Erban and Walker [-@erban2019].
+
+The broader environmental justice literature helps explain why such
+infrastructural vulnerabilities disproportionately burden economically
+challenged communities. Balazs and Ray's [-@balazs2014] Drinking Water
+Disparities Framework, though developed in the context of California's San
+Joaquin Valley, offers a transferable analytic structure: natural, built,
+and sociopolitical factors interact across state, county, community, and
+household levels to produce and sustain unequal exposure to contaminated
+water [@balazs2014]. Central to their framework is the finding that small
+or under-resourced water systems face compounding barriers—not only
+inadequate infrastructure but also low TMF capacity—that make securing
+remediation funding especially difficult, since state and federal funding
+criteria often require the very capacity that disadvantaged systems lack
+[@balazs2014]. This dynamic is directly relevant to suburban Cook County,
+where smaller municipal or mixed public-private systems serving
+lower-income populations may be structurally less equipped to pursue lead
+service line replacement funding—whether through Illinois's own Lead
+Service Line Replacement Fund or federal Bipartisan Infrastructure Law
+channels—than wealthier, better-staffed suburban utilities.
+
+Karasaki et al.'s [-@karasaki2023] critical review of primary-data
+environmental justice studies on drinking water reinforces this picture
+while highlighting a persistent research gap: most studies document
+*distributive* injustice (disparities in water quality or infrastructure
+access) and, to a lesser extent, *procedural* injustice (exclusion from
+decision-making), but few explicitly measure the corrective or remediation
+process itself [@karasaki2023]. Their review also underscores that
+infrastructural disconnection and legacy contamination problems—including
+lead—are concentrated in unincorporated, low-income, and minority
+communities, and that the state's role in redress is contested, since
+state and municipal actors are often implicated in the very
+underinvestment that produced the hazard [@karasaki2023]. Williamson et
+al.'s [-@williamson2020] scoping review of environmental justice
+capacity-building complements this by showing that even where
+community-academic partnerships and community organizing succeed in
+raising awareness and building citizen participation, translation into
+actual policy, system, or environmental (PSE) change—such as pipe
+replacement—occurs in only a minority of cases [@williamson2020],
+suggesting that community mobilization alone is insufficient without
+dedicated public investment, and that statutory mandates such as 415
+ILCS 5/17.12 may be a necessary, if not sufficient, condition for
+remediation in disadvantaged suburban systems.
+
+Finally, Fanaian et al.'s [-@fanaian2025] systematic review of the broader
+"water justice" literature situates these local dynamics within an
+evolving theoretical landscape, noting a shift from earlier
+distributive/procedural framings toward attention to structural power
+imbalances, institutional capture, and the limits of purely technical or
+infrastructural "fixes" [@fanaian2025]. Their review is explicit that
+infrastructure-led solutions—desalination, pipe replacement, treatment
+upgrades—cannot be treated as stand-alone remedies, since without
+accompanying institutional reform and sustained funding accountability,
+gains toward water justice are frequently reversed by shifts in political
+leadership or budget priorities [@fanaian2025]. Taken together, this
+literature suggests that lead pipe remediation in economically challenged
+suburban Cook County communities is unlikely to be resolved through
+statutory mandate or infrastructure spending alone; it will require
+addressing the underlying financial entanglement of water utility revenue
+with municipal budgets, the TMF capacity gaps of smaller systems, and
+sustained, redistributive funding mechanisms responsive to structural
+inequity rather than reliant on individual communities' capacity to
+advocate for themselves or comply unassisted with Illinois's phased
+statutory deadlines.
+
+# Methodology
+
+## Public Water System Service Area Boundaries
+
+As an initial step in mapping jurisdictional responsibility for drinking water in suburban Cook County, service area boundaries were obtained from the U.S. Environmental Protection Agency's (EPA) Public Water System Service Area Boundaries dataset (Version 3, released March 2026). This national geospatial dataset combines service area boundaries published by state agencies and individual water systems with EPA-modeled boundaries generated for systems where authoritative state data was unavailable. The dataset covers over 44,000 community water systems nationally, representing approximately 99% of the population served by community water systems in the United States, and additionally maps transient and non-transient non-community water systems (e.g., schools, workplaces, and other facilities with their own water supply) at the parcel level.
+
+Each mapped service area is linked to its system's federal Public Water System Identification number (PWSID), enabling direct integration with compliance and violation records maintained in the EPA's Safe Drinking Water Information System (SDWIS). This linkage allows regulatory compliance history to be layered spatially onto jurisdictional boundaries, supporting analysis of whether violations cluster within particular governance types or geographic areas of suburban Cook County.
+
+Boundaries were retrieved programmatically via the dataset's ArcGIS REST Feature Service and clipped to the Cook County study area. Because the dataset combines authoritative and EPA-modeled boundaries, systems were flagged by boundary source (state/utility-sourced vs. EPA-modeled) to account for potential differences in spatial accuracy across the study area; this distinction is reported where relevant to interpretation of findings.
+
+```{r}
+## ---------------------------------------------------------------------------
+## Download EPA Public Water System (Community Water System) Service Area
+## Boundaries for Cook County, IL from the national ArcGIS FeatureServer
+##
+## Source: EPA Office of Water, Public Water System Service Area Boundaries v3
+## https://www.epa.gov/ground-water-and-drinking-water/public-water-system-service-areas
+## REST endpoint:
+## https://services.arcgis.com/cJ9YHowT8TU7DUyn/arcgis/rest/services/Water_System_Boundaries/FeatureServer
+## ---------------------------------------------------------------------------
+
+## ---- 0. Setup ---------------------------------------------------------------
+
+## IMPORTANT: EPA's Public Water System Service Area Boundaries dataset
+## includes some invalid polygons (self-intersections, duplicate vertices),
+## especially among EPA-modeled boundaries. sf's default spherical geometry
+## engine (s2) is strict about validity and will throw an error like:
+##   "Loop 2 is not valid: Edge 1694 has duplicate vertex with edge 1731"
+## Turning off s2 (falls back to the more forgiving GEOS planar engine) avoids
+## this at the query/filter stage. Geometries are still explicitly repaired
+## with st_make_valid() below as a second safeguard.
+sf::sf_use_s2(FALSE)
+
+feature_server_url <- "https://services.arcgis.com/cJ9YHowT8TU7DUyn/arcgis/rest/services/Water_System_Boundaries/FeatureServer"
+
+## ---- 1. Get a Cook County, IL boundary to use as a spatial filter -----------
+## This avoids downloading the entire national dataset (44,000+ systems).
+
+cook_county <- counties(state = "IL", cb = TRUE, year = 2023) |>
+  filter(NAME == "Cook") |>
+  st_transform(4326)
+
+## ---- 2. PREFERRED METHOD: arcgislayers package -----------------------------
+## arcgislayers (R-ArcGIS team) handles pagination, field selection, and
+## spatial filtering automatically -- it is the modern, maintained way to
+## pull data from an Esri FeatureServer/MapServer into R as an sf object.
+
+if (!requireNamespace("arcgislayers", quietly = TRUE)) {
+  install.packages("arcgislayers", repos = c("https://r-arcgis.r-universe.dev", "https://cloud.r-project.org"))
+}
+
+# List the layers/sublayers on this FeatureServer so you can confirm the
+# correct layer index (there may be more than one, e.g. active vs. historical).
+service <- arc_open(feature_server_url)
+print(service)  # inspect layer names/IDs in the console
+
+# Typically layer 0 is the main community water system boundaries layer --
+# adjust the index below if arc_open() shows otherwise.
+cws_layer <- arc_open(paste0(feature_server_url, "/0"))
+
+# Pull only features that intersect the Cook County boundary, and only the
+# columns we care about, to keep the request lean.
+cook_cws_raw <- arc_select(
+  cws_layer,
+  filter_geom = st_as_sfc(st_bbox(cook_county)),  # bounding-box prefilter
+  fields = NULL  # NULL = all fields; replace with a character vector to limit
+)
+
+# Repair invalid geometries (self-intersections, duplicate vertices) before
+# doing any further spatial operations -- this is what the s2 error flagged.
+cook_cws_valid <- cook_cws_raw |>
+  st_make_valid()
+
+# Confirm nothing is still invalid; report count of any remaining problem rows
+n_invalid <- sum(!st_is_valid(cook_cws_valid))
+if (n_invalid > 0) {
+  message(n_invalid, " feature(s) remain invalid after st_make_valid(); ",
+          "these will be dropped before clipping.")
+  cook_cws_valid <- cook_cws_valid[st_is_valid(cook_cws_valid), ]
+}
+
+cook_cws <- cook_cws_valid |>
+  st_filter(cook_county, .predicate = st_intersects)  # precise clip to county polygon
+
+## ---- 3. FALLBACK METHOD: manual REST query with pagination -----------------
+## Use this if arcgislayers is unavailable/fails (e.g. restricted network).
+## Esri REST services usually cap each response at ~1,000-2,000 records
+## (maxRecordCount), so we page through results with resultOffset.
+
+fallback_download <- function(base_url, layer_id = 0, where = "1=1",
+                               geometry_sf = NULL, batch_size = 1000) {
+  library(httr2)
+  library(geojsonsf)
+
+  query_url <- paste0(base_url, "/", layer_id, "/query")
+
+  # Build an ArcGIS JSON envelope from the sf bbox, if a filter geometry is given
+  geom_param <- NULL
+  if (!is.null(geometry_sf)) {
+    bb <- st_bbox(st_transform(geometry_sf, 4326))
+    geom_param <- sprintf(
+      '{"xmin":%f,"ymin":%f,"xmax":%f,"ymax":%f,"spatialReference":{"wkid":4326}}',
+      bb["xmin"], bb["ymin"], bb["xmax"], bb["ymax"]
+    )
+  }
+
+  all_features <- list()
+  offset <- 0
+  repeat {
+    req <- request(query_url) |>
+      req_url_query(
+        where = where,
+        outFields = "*",
+        f = "geojson",
+        resultOffset = offset,
+        resultRecordCount = batch_size,
+        geometry = geom_param,
+        geometryType = if (!is.null(geom_param)) "esriGeometryEnvelope" else NULL,
+        inSR = if (!is.null(geom_param)) 4326 else NULL,
+        spatialRel = if (!is.null(geom_param)) "esriSpatialRelIntersects" else NULL
+      )
+
+    resp <- req_perform(req)
+    txt <- resp_body_string(resp)
+
+    batch_sf <- geojson_sf(txt)
+    if (nrow(batch_sf) == 0) break
+
+    all_features[[length(all_features) + 1]] <- batch_sf
+    if (nrow(batch_sf) < batch_size) break
+    offset <- offset + batch_size
+  }
+
+  dplyr::bind_rows(all_features) |>
+    st_as_sf() |>
+    st_make_valid()  # same fix as the primary method -- repairs invalid EPA geometries
+}
+
+# Uncomment to use the fallback instead of arcgislayers:
+# cook_cws <- fallback_download(
+#   base_url     = feature_server_url,
+#   layer_id     = 0,
+#   geometry_sf  = cook_county
+# ) |>
+#   st_filter(cook_county, .predicate = st_intersects)
+
+## ---- 4. Inspect and save -----------------------------------------------------
+
+glimpse(st_drop_geometry(cook_cws))
+
+# Save as a GeoPackage (preferred - single file, preserves types) and Shapefile
+# (for compatibility with older GIS software) into /mnt/user-data/outputs
+st_write(cook_cws, "data/spatial/cook_county_water_system_boundaries.gpkg",
+          delete_dsn = TRUE)
+st_write(cook_cws, "data/spatial/cook_county_water_system_boundaries.shp",
+          delete_dsn = TRUE)
+
+## ---- 5. Quick visual check ----------------------------------------------------
+
+ggplot() +
+  geom_sf(data = cook_county, fill = NA, color = "black", linewidth = 0.6) +
+  geom_sf(data = cook_cws, aes(fill = PWS_Name), color = "white", linewidth = 0.1,
+          show.legend = FALSE, alpha = 0.85) +
+  theme_minimal() +
+  labs(
+    title = "Community Water System Service Areas, Cook County, IL",
+    caption = "Source: U.S. EPA Public Water System Service Area Boundaries (v3)"
+  )
+
+## ---------------------------------------------------------------------------
+## NOTES
+## ---------------------------------------------------------------------------
+##   EPA data dictionary for the authoritative field list:
+##   https://www.epa.gov/system/files/documents/2026-03/data-dictionary_v3_03162026.pdf
+##
+## - This layer covers COMMUNITY water systems only. Non-community systems
+##   (schools, gas stations, small transient supplies) are in a separate
+##   FeatureServer -- see the EPA page for that endpoint if needed.
+##
+## - The boundary data mixes EPA-modeled boundaries with authoritative
+##   state/utility-sourced boundaries. Check the SOURCE or DATA_SRC field
+##   (naming varies by version) to flag which Cook County systems are
+##   modeled estimates vs. verified boundaries -- worth reporting in your
+##   methods section.
+##
+## - To link to SDWIS violation data, join on the PWSID field to EPA's
+##   ECHO/SDWIS downloads: https://echo.epa.gov/tools/data-downloads/sdwa-download-summary
+## ---------------------------------------------------------------------------
+```
+
+## Drinking Water Violation and Compliance
+
+Water quality violation and enforcement data were obtained from the U.S. EPA's Enforcement and Compliance History Online (ECHO) system, which incorporates records from the Safe Drinking Water Information System (SDWIS). SDWIS contains system-level monitoring, violation, and enforcement data reported by states to EPA under the Safe Drinking Water Act, refreshed quarterly. Data were retrieved via ECHO's bulk SDWA download, which was filtered to public water systems with an Illinois-prefixed system identifier (PWSID), then further narrowed to systems identified as serving Cook County based on the county-served field in SDWIS's geographic area records.
+
+Because this county designation is self-reported by states and water systems and may be incomplete for some systems, this attribution was cross-checked against a spatial join of PWSID-linked service area boundaries (see prior section) to the Cook County geographic boundary; discrepancies between the two methods were retained and reported rather than reconciled, to avoid understating potential gaps in system-level geographic reporting.
+
+Violation records were joined to system-level identifying information—including ownership type (local government, private, public/private, state, or federal), population served, and primary water source—to support analysis of whether violation patterns differ by governance structure. Violation and contaminant codes were decoded into descriptive labels using SDWIS's reference code table. Violations specific to the Lead and Copper Rule were identified separately to align with this study's focus on lead service line infrastructure, and corresponding lead and copper sample measurement data were retrieved to supplement binary violation status with underlying concentration data where available.
+
+For each system, violations were summarized by total count, count of health-based violations, count of unresolved violations (i.e., violations not yet subject to a resolving enforcement action, per EPA's compliance status categories), and count of Lead and Copper Rule violations specifically. This system-level summary was structured for direct linkage, via PWSID, to the water system service area boundaries described above, enabling spatial analysis of violation patterns across suburban Cook County's jurisdictional landscape.
+
+It should be noted that the retrieved dataset reflects a single quarterly snapshot rather than a longitudinal violation history; analyses of trends over time would require supplementary retrieval of historical SDWIS data.
+```{r}
+## ---------------------------------------------------------------------------
+## Download and process SDWIS violation/compliance data (via EPA's ECHO
+## bulk download) for Illinois public water systems, and join to the
+## Cook County water system service area boundaries pulled previously.
+##
+## Source: EPA ECHO - Safe Drinking Water Act (SDWA) Data Downloads
+## Summary/data dictionary: https://echo.epa.gov/tools/data-downloads/sdwa-download-summary
+## Bulk download index:     https://echo.epa.gov/files/echodownloads/
+## ---------------------------------------------------------------------------
+
+## ---- 0. Setup ----------------------------------------------------------------
+
+# Install once if needed:
+# install.packages(c("readr", "dplyr", "purrr", "stringr", "sf"))
+
+data_dir <- "data/tabular"
+dir.create(data_dir, showWarnings = FALSE, recursive = TRUE)
+
+zip_url  <- "https://echo.epa.gov/files/echodownloads/SDWA_latest_downloads.zip"
+zip_path <- file.path(data_dir, "SDWA_latest_downloads.zip")
+
+## ---- 1. Download the bulk SDWA dataset ---------------------------------------
+## NOTE: This is a large file (~400+ MB) containing every public water system
+## nationally. EPA refreshes it quarterly. Rather than paginating a REST API
+## (as with the boundary data), the SDWIS/ECHO data is distributed as a single
+## bulk ZIP of CSVs, which is the intended and far more efficient access
+## method for this dataset.
+
+if (!file.exists(zip_path)) {
+  download.file(zip_url, destfile = zip_path, mode = "wb")
+}
+
+## ---- 2. Extract only the files we need ---------------------------------------
+## The ZIP contains ~10 CSVs (see the SDWA Data Download Summary for the full
+## file list/dictionary). We only need a subset for a jurisdiction/compliance
+## analysis: the system inventory, violations & enforcement, service areas,
+## geographic areas (for county name), and the reference code table (to
+## decode violation/contaminant codes into readable labels).
+
+needed_files <- c(
+  "SDWA_PUB_WATER_SYSTEMS.csv",
+  "SDWA_VIOLATIONS_ENFORCEMENT.csv",
+  "SDWA_GEOGRAPHIC_AREAS.csv",
+  "SDWA_SERVICE_AREAS.csv",
+  "SDWA_REF_CODE_VALUES.csv",
+  "SDWA_LCR_SAMPLES.csv"          # Lead & Copper Rule sample data
+)
+
+zip_contents <- unzip("data/tabular/SDWA_latest_downloads.zip", list = TRUE)$Name
+
+# Match needed files case-insensitively in case EPA changes casing between
+# quarterly releases
+files_to_extract <- zip_contents[
+  toupper(zip_contents) %in% toupper(needed_files)
+]
+
+missing <- setdiff(toupper(needed_files), toupper(files_to_extract))
+if (length(missing) > 0) {
+  message("Note: the following expected files were not found in this quarter's ZIP: ",
+          paste(missing, collapse = ", "),
+          "\nCheck zip_contents (printed below) for the current file list/naming.")
+  print(zip_contents)
+}
+
+unzip(zip_path, files = files_to_extract, exdir = data_dir, overwrite = TRUE)
+
+## ---- 3. Read in and filter to Illinois -----------------------------------
+## PWSID's first two characters are the state/region code (e.g., "IL"), so we
+## can filter every table to Illinois systems before any join, which keeps
+## the working data small.
+
+read_il <- function(filename) {
+  path <- file.path(data_dir, filename)
+  if (!file.exists(path)) return(NULL)
+  read_csv(path, guess_max = 100000, show_col_types = FALSE) |>
+    filter(str_starts(PWSID, "IL"))
+}
+
+pws        <- read_il("SDWA_PUB_WATER_SYSTEMS.csv")
+violations <- read_il("SDWA_VIOLATIONS_ENFORCEMENT.csv")
+geo_areas  <- read_il("SDWA_GEOGRAPHIC_AREAS.csv")
+svc_areas  <- read_il("SDWA_SERVICE_AREAS.csv")
+lcr_samples <- read_il("SDWA_LCR_SAMPLES.csv")
+
+# Reference codes are not state-specific -- read in full (it's a small file)
+ref_codes <- read_csv(file.path(data_dir, "SDWA_REF_CODE_VALUES.csv"),
+                       show_col_types = FALSE)
+
+## ---- 4. Narrow to Cook County systems -----------------------------------------
+## SDWA_GEOGRAPHIC_AREAS.csv includes a COUNTY_SERVED field, which is the most
+## direct way to identify Cook County systems within the Illinois subset.
+## This is self-reported by water systems/states and may be incomplete for
+## some systems -- cross-check counts against the boundary-based approach
+## (spatial join to the Cook County polygon from the previous script) to
+## catch systems missing a county label.
+
+cook_pwsids <- geo_areas |>
+  filter(str_to_upper(COUNTY_SERVED) == "COOK") |>
+  distinct(PWSID) |>
+  pull(PWSID)
+
+message(length(cook_pwsids), " unique PWSIDs identified as serving Cook County ",
+        "via the COUNTY_SERVED field.")
+
+pws_cook        <- pws        |> filter(PWSID %in% cook_pwsids)
+violations_cook <- violations |> filter(PWSID %in% cook_pwsids)
+lcr_cook        <- lcr_samples |> filter(PWSID %in% cook_pwsids)
+
+## ---- 5. Decode key coded fields using the reference table --------------------
+
+decode <- function(df, code_col, value_type, new_col) {
+  lookup <- ref_codes |>
+    filter(VALUE_TYPE == value_type) |>
+    select(VALUE_CODE, VALUE_DESCRIPTION) |>
+    rename(!!new_col := VALUE_DESCRIPTION)
+
+  df |>
+    left_join(lookup, by = setNames("VALUE_CODE", code_col))
+}
+
+violations_cook <- violations_cook |>
+  decode("VIOLATION_CODE", "VIOLATION_CODE", "violation_description") |>
+  decode("CONTAMINANT_CODE", "CONTAMINANT_CODE", "contaminant_description")
+
+## ---- 6. Summarize violations by system (a natural first analytic table) ------
+
+violation_summary <- violations_cook |>
+  group_by(PWSID) |>
+  summarise(
+    n_violations           = n(),
+    n_health_based         = sum(IS_HEALTH_BASED_IND == "Y", na.rm = TRUE),
+    n_unresolved           = sum(VIOLATION_STATUS %in% c("Unaddressed", "Addressed"), na.rm = TRUE),
+    n_lead_copper_rule     = sum(RULE_CODE == "350", na.rm = TRUE),
+    most_recent_violation  = max(VIOL_LAST_REPORTED_DATE, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+pws_cook_summary <- pws_cook |>
+  select(PWSID, PWS_NAME, OWNER_TYPE_CODE, POPULATION_SERVED_COUNT,
+         PRIMARY_SOURCE_CODE, PWS_ACTIVITY_CODE, SERVICE_CONNECTIONS_COUNT) |>
+  left_join(violation_summary, by = "PWSID") |>
+  mutate(across(starts_with("n_"), ~ replace_na(.x, 0)))
+
+## ---- 7. Save outputs ------------------------------------------------------
+
+out_dir <- "/mnt/user-data/outputs"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+write_csv(pws_cook,          file.path(out_dir, "cook_county_pws_inventory.csv"))
+write_csv(violations_cook,   file.path(out_dir, "cook_county_sdwa_violations.csv"))
+write_csv(lcr_cook,          file.path(out_dir, "cook_county_lead_copper_samples.csv"))
+write_csv(pws_cook_summary,  file.path(out_dir, "cook_county_pws_violation_summary.csv"))
+
+## ---- 8. (Optional) Join to the service area boundaries from the prior script --
+## If cook_cws (the sf object from download_water_system_boundaries.R) is
+## already loaded in this session, join the violation summary directly onto
+## the spatial boundaries on PWSID for mapping.
+
+# library(sf)
+# cook_cws_with_violations <- cook_cws |>
+#   left_join(pws_cook_summary, by = c("PWSID" = "PWSID"))
+#
+# st_write(cook_cws_with_violations,
+#           file.path(out_dir, "cook_county_water_systems_with_violations.gpkg"),
+#           delete_dsn = TRUE)
+
+## ---------------------------------------------------------------------------
+## NOTES
+## ---------------------------------------------------------------------------
+## - PWSID prefix filtering (str_starts(PWSID, "IL")) captures Illinois-
+##   primacy systems. A small number of tribal systems in Illinois may be
+##   coded under an EPA region prefix rather than "IL" -- check EPA_REGION
+##   in SDWA_PUB_WATER_SYSTEMS.csv if tribal systems are in scope.
+##
+## - COUNTY_SERVED in SDWA_GEOGRAPHIC_AREAS.csv is self-reported and known to
+##   be incomplete/inconsistent (EPA notes this explicitly in the data
+##   dictionary). For a jurisdictional map, consider validating this list
+##   against a spatial join of the PWSID-linked service area boundaries
+##   (from download_water_system_boundaries.R) to the Cook County polygon --
+##   the two methods should mostly agree, and discrepancies are worth
+##   reporting rather than silently reconciling.
+##
+## - OWNER_TYPE_CODE decodes as: F = Federal, L = Local government,
+##   M = Public/Private, N = Native American, P = Private, S = State.
+##   This is your key field for the "who owns/operates" governance dimension
+##   -- e.g., flagging municipal (L) vs. investor-owned (P) systems.
+##
+## - RULE_CODE == "350" isolates Lead and Copper Rule violations specifically
+##   (see full rule code list in SDWA_VIOLATIONS_ENFORCEMENT.csv documentation,
+##   captured in this script's data dictionary reference).
+##
+## - VIOLATION_STATUS categories (Resolved / Archived / Addressed /
+##   Unaddressed) are EPA's own compliance framing -- "Unaddressed" and
+##   "Addressed" both indicate the violation has not reached a resolving
+##   enforcement action, and are treated here as "unresolved" for a simple
+##   summary count. Adjust this grouping if your analysis needs the
+##   Resolved/Archived distinction preserved (e.g., Archived violations
+##   dropped out of active compliance tracking after 5 years regardless of
+##   resolution, per EPA's Enforcement Response Policy).
+##
+## - This is quarterly-snapshot data (SUBMISSIONYEARQUARTER field); the bulk
+##   download represents the latest quarter only. For a violations *history*
+##   across time, EPA's SDWA_downloads_cy.zip (cumulative year) or the
+##   individual violations file's date fields may be needed instead --
+##   check https://echo.epa.gov/files/echodownloads/ for current file options.
+## ---------------------------------------------------------------------------
+```
+
+## Lead Service Lines
+```{r}
+## ---------------------------------------------------------------------------
+## Aggregate municipal Lead Service Line Inventory layers across suburban
+## Cook County into a single combined spatial dataset.
+##
+## CONTEXT: Unlike drinking water compliance data (SDWIS/ECHO) or water
+## system service area boundaries (EPA national dataset), there is no
+## existing national or state-level aggregation of parcel/line-level lead
+## service line inventories. Each municipality publishes its own inventory
+## independently, typically as an Esri "Lead Service Line Inventory"
+## solution (Experience Builder or Web AppBuilder app backed by a hosted
+## FeatureServer). This script assumes those per-municipality FeatureServer
+## URLs have been manually identified (see notes below) and aggregates them.
+## ---------------------------------------------------------------------------
+
+## ---- 0. Setup ----------------------------------------------------------------
+
+library(sf)
+library(dplyr)
+library(purrr)
+library(arcgislayers)   # install from https://r-arcgis.r-universe.dev if needed
+
+sf::sf_use_s2(FALSE)     # avoid invalid-geometry errors, as with the boundary data
+
+## ---- 1. Config table of municipal endpoints -----------------------------------
+## THIS IS THE PART THAT REQUIRES MANUAL COLLECTION.
+##
+## How to find each URL:
+##   1. Open the municipality's public lead service line map in a browser
+##      (Chrome/Edge/Firefox).
+##   2. Open Developer Tools (F12) -> Network tab -> filter for "FeatureServer".
+##   3. Reload the map. A request to a URL ending in .../FeatureServer/query
+##      (or /FeatureServer/0/query, etc.) will appear -- copy everything up
+##      to and including "FeatureServer" (drop the /query and parameters).
+##   4. Also note which layer index (usually 0) holds the actual service
+##      line features vs. any reference/basemap layers.
+##
+## Populate the table below as endpoints are found. Leave feature_server_url
+## as NA for municipalities not yet resolved -- the script will skip them
+## and report what's missing, rather than failing.
+
+municipal_endpoints <- tibble::tribble(
+  ~municipality,       ~feature_server_url,                                    ~layer_id, ~notes,
+  "Glenview",          NA_character_,                                          0L,        "Experience Builder app confirmed at experience.arcgis.com/experience/f110f2dabfdb46ceb3bd04055de8ee9b; underlying FeatureServer not yet resolved -- likely hosted via GIS Consortium (public.gisconsortium.org) shared backend",
+  "Rolling Meadows",   NA_character_,                                          0L,        "Public map referenced at cityrm.org/935/Lead-Service-Line-Inventory; endpoint not yet resolved",
+  "Algonquin",         NA_character_,                                          0L,        "Public map referenced at algonquin.org; endpoint not yet resolved",
+  "Northbrook",        NA_character_,                                          0L,        "Village publishes inventory but map endpoint not yet resolved",
+  "Elgin",             NA_character_,                                          0L,        "Village publishes an address-lookup map; endpoint not yet resolved",
+  "Clarendon Hills",   NA_character_,                                          0L,        "Endpoint not yet resolved",
+  "Park Ridge",        NA_character_,                                          0L,        "Endpoint not yet resolved",
+  "North Riverside",   NA_character_,                                          0L,        "Endpoint not yet resolved",
+  "Lincolnwood",       NA_character_,                                          NA_integer_, "Publishes inventory only as a static PDF, not an interactive map -- not compatible with this pipeline; would need separate PDF-table extraction"
+)
+
+## ---- 2. Standardized field mapping ---------------------------------------------
+## Different municipalities' inventories (even when both built from Esri's
+## "Lead Service Line Inventory" solution template) may use different field
+## names for the same concept, especially if customized locally. Define a
+## mapping so results can be combined into consistent output columns.
+##
+## The Esri template's DEFAULT field names are used as the target schema:
+##   UtilityStatus / CustomerStatus / EntireServiceLineStatus
+##   (values: Lead, Galvanized Requiring Replacement (GRR), Non-Lead, Unknown)
+
+standard_fields <- c(
+  "UtilityStatus", "CustomerStatus", "EntireServiceLineStatus",
+  "LocationID", "Address"
+)
+
+## ---- 3. Pull function for a single municipality --------------------------------
+
+pull_municipal_lsl <- function(municipality, url, layer_id) {
+  if (is.na(url)) {
+    message(municipality, ": no endpoint on file -- skipping.")
+    return(NULL)
+  }
+
+  result <- tryCatch({
+    layer <- arc_open(paste0(url, "/", layer_id))
+    data  <- arc_select(layer) |> st_make_valid()
+    data$municipality <- municipality
+    data
+  }, error = function(e) {
+    message(municipality, ": pull failed -- ", conditionMessage(e))
+    NULL
+  })
+
+  result
+}
+
+## ---- 4. Pull all municipalities and combine ------------------------------------
+
+pulled <- municipal_endpoints |>
+  filter(!is.na(feature_server_url)) |>
+  pmap(function(municipality, feature_server_url, layer_id, notes) {
+    pull_municipal_lsl(municipality, feature_server_url, layer_id)
+  }) |>
+  compact()   # drop NULLs (failed/skipped pulls)
+
+if (length(pulled) == 0) {
+  stop("No municipal endpoints were successfully pulled. Populate ",
+       "municipal_endpoints with resolved FeatureServer URLs first.")
+}
+
+## ---- 5. Harmonize schemas before combining --------------------------------------
+## Different municipalities' layers will likely have different attribute
+## sets. Select/rename to the standard schema where present, and flag any
+## fields that couldn't be matched for manual review rather than silently
+## dropping data.
+
+harmonize <- function(df) {
+  present <- intersect(standard_fields, names(df))
+  missing <- setdiff(standard_fields, names(df))
+  if (length(missing) > 0) {
+    message(unique(df$municipality), ": missing expected fields -- ",
+            paste(missing, collapse = ", "))
+  }
+  df |> select(municipality, all_of(present), geometry)
+}
+
+cook_lsl_combined <- map(pulled, harmonize) |>
+  bind_rows() |>
+  st_as_sf()
+
+## ---- 6. Summary and save ---------------------------------------------------------
+
+summary_by_municipality <- cook_lsl_combined |>
+  st_drop_geometry() |>
+  count(municipality, EntireServiceLineStatus)
+
+print(summary_by_municipality)
+
+out_dir <- "/mnt/user-data/outputs"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+st_write(cook_lsl_combined,
+         file.path(out_dir, "cook_county_lead_service_lines_combined.gpkg"),
+         delete_dsn = TRUE)
+write.csv(summary_by_municipality,
+          file.path(out_dir, "cook_county_lsl_summary_by_municipality.csv"),
+          row.names = FALSE)
+
+## ---------------------------------------------------------------------------
+## NOTES
+## ---------------------------------------------------------------------------
+## - COVERAGE IS NECESSARILY PARTIAL. Only ~130 suburban Cook municipalities
+##   have any water system at all; of those, only some have built a public-
+##   facing interactive map (vs. PDF-only or no public inventory at all).
+##   Report the count of municipalities with (a) no public inventory found,
+##   (b) PDF-only inventory, (c) interactive map but endpoint unresolved,
+##   and (d) successfully aggregated -- this fourfold breakdown is itself a
+##   meaningful empirical finding about inventory transparency/fragmentation,
+##   independent of what the lead-line data itself shows.
+##
+## - SEVERAL MUNICIPALITIES MAY SHARE ONE BACKEND. If a cluster of towns use
+##   the GIS Consortium (public.gisconsortium.org) or another shared vendor,
+##   check whether their FeatureServers live under a common
+##   services*.arcgis.com/<org-id>/... root -- if so, one properly-scoped
+##   query against that org's REST catalog might surface several
+##   municipalities' layers at once rather than needing each found
+##   individually.
+##
+## - FIELD DEFINITIONS DIFFER BY MUNICIPALITY even when both use Esri's
+##   template, if local staff customized domains/labels (as seen in Esri
+##   Community forum discussions of this exact issue). Manually verify each
+##   municipality's field values map to the same underlying categories
+##   (Lead / GRR / Non-Lead / Unknown) before combining -- a value coded
+##   "Unknown" in one town's system and "Lead Status Unknown" in another's
+##   should be treated as equivalent, but don't assume this without checking.
+##
+## - THIS APPROACH DOES NOT SCALE WELL to all ~130 municipalities without
+##   either (a) a research assistant spending time on each town's map, or
+##   (b) direct outreach to IEPA requesting the underlying submitted
+##   inventories in bulk, which -- since IEPA already collects these
+##   annually under 415 ILCS 5/17.12 -- may be a far more efficient path
+##   than reverse-engineering ~100+ individual web maps.
+## ---------------------------------------------------------------------------
+```
+
+
+# Analysis
+
+# Discussion
+
+# Conclusion
+
+
+
+
+
+
