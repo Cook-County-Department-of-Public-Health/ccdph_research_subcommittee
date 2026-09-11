@@ -770,13 +770,19 @@ To support exploration of how SDWA violation burden is distributed across suburb
 #| label: leaflet-map-cws-violations
 #| eval: true
 
+## ---- 0. Carto basemap API key --------------------------------------------------
+## CARTO_API_KEY authenticates the Carto Basemaps raster tile service used for
+## the light "Positron" basemap below (see https://basemaps.cartocdn.com).
+
+CARTO_API_KEY <- "cb1_31xh_1_06fb99adb466f0f5a0392d7d"
+
 ## ---- 1. Derive violation density (per square mile) --------------------------
 ## Area_SqKM is the service area's shape-derived area in square kilometers;
 ## convert to square miles (1 sq km = 0.386102159 sq mi) and divide total
 ## violations by area. Guard against zero/NA area to avoid Inf/NaN densities
 ## for slivers or unresolved boundary geometries.
 
-cook_cws_with_violations <- cook_cws_with_violations |>
+cook_cws_with_violations <- cook_cws_with_violations %>%
   mutate(
     area_sqmi = Area_SqKM * 0.386102159,
     violation_density_sqmi = if_else(
@@ -797,7 +803,7 @@ violation_bins <- quantile(
   cook_cws_with_violations$n_violations,
   probs = seq(0, 1, by = 0.2),
   na.rm = TRUE
-) |>
+) %>%
   unique()
 
 violation_pal <- colorBin(
@@ -833,16 +839,22 @@ cws_labels <- sprintf(
   format(cook_cws_with_violations$n_lead_copper_rule, big.mark = ","),
   as.character(cook_cws_with_violations$most_recent_violation),
   formatC(cook_cws_with_violations$violation_density_sqmi, format = "f", digits = 2, big.mark = ",")
-) |>
+) %>%
   lapply(htmltools::HTML)
 
 ## ---- 4. Build the interactive map ---------------------------------------------
 
-leaflet() |>
-  addProviderTiles(providers$CartoDB.Positron, group = "Positron (minimal)") |>
-  addProviderTiles(providers$Esri.WorldImagery, group = "World Imagery (satellite)") |>
+leaflet() %>%
+  addTiles(
+    urlTemplate = paste0(
+      "https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png?key=",
+      CARTO_API_KEY
+    ),
+    group = "Positron (minimal)"
+  ) %>%
+  addProviderTiles(providers$Esri.WorldImagery, group = "World Imagery (satellite)") %>%
   addPolygons(
-    data = cook_cws_with_violations |> st_transform(crs = 4326),
+    data = cook_cws_with_violations %>% st_transform(crs = 4326),
     group = "Water System Violations",
     fillColor = ~violation_pal(n_violations),
     weight = 0.5,
@@ -863,26 +875,26 @@ leaflet() |>
       textsize = "13px",
       direction = "auto"
     )
-  ) |>
+  ) %>%
   addPolylines(
-    data = cook_county |> st_transform(crs = 4326),
+    data = cook_county %>% st_transform(crs = 4326),
     stroke = TRUE,
     weight = 2.5,
     opacity = 1,
     fillOpacity = 0,
     color = "black",
     group = "Cook County Boundary"
-  ) |>
+  ) %>%
   addLegend(
     "bottomleft",
     pal = violation_pal,
     values = cook_cws_with_violations$n_violations,
     title = "SDWA Violations<br>(count, quintile bins)",
     opacity = 1
-  ) |>
-  addScaleBar(position = "bottomright") |>
-  addFullscreenControl() |>
-  addResetMapButton() |>
+  ) %>%
+  addScaleBar(position = "bottomright") %>%
+  addFullscreenControl() %>%
+  addResetMapButton() %>%
   addLayersControl(
     baseGroups = c("Positron (minimal)", "World Imagery (satellite)"),
     overlayGroups = c("Water System Violations", "Cook County Boundary"),
