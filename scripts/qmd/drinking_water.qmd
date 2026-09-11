@@ -65,7 +65,7 @@ library(leaflet.extras)  # addFullscreenControl(), addResetMapButton()
 ## saves only these two essential objects for rendering this document. Run
 ## that script (from this directory) to regenerate data/drinking_water_dataprep.RData
 ## after a data refresh.
-load("data/drinking_water_dataprep.RData")
+load("../../data/drinking_water_dataprep.RData")
 ```
 
 # Background
