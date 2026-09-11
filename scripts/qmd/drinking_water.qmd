@@ -783,6 +783,8 @@ To support exploration of how SDWA violation burden is distributed across suburb
 ```{r}
 #| label: leaflet-map-cws-violations
 #| eval: true
+#| out-width: "100%"
+#| out-height: "700px"
 
 ## ---- 0. Carto basemap API key --------------------------------------------------
 ## CARTO_API_KEY authenticates the Carto Basemaps raster tile service used for
@@ -860,7 +862,7 @@ cws_labels <- sprintf(
 
 CARTO_API_KEY <- "cb1_31xh_1_06fb99adb466f0f5a0392d7d"
 
-leaflet() %>%
+leaflet(width = "100%", height = 700) %>%
   addTiles(
     urlTemplate = paste0(
       "https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png?key=",
