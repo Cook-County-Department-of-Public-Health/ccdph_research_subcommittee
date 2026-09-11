@@ -54,6 +54,20 @@ library(leaflet)
 library(leaflet.extras)  # addFullscreenControl(), addResetMapButton()
 ```
 
+```{r}
+#| label: load prepared analysis data
+#| eval: true
+#| echo: false
+
+## cook_county and cook_cws_with_violations are produced by
+## drinking_water_dataprep.R, which runs the full Methodology-section data
+## pipeline (EPA service area boundaries + SDWIS/ECHO violation join) and
+## saves only these two essential objects for rendering this document. Run
+## that script (from this directory) to regenerate data/drinking_water_dataprep.RData
+## after a data refresh.
+load("data/drinking_water_dataprep.RData")
+```
+
 # Background
 ## Literature Review
 
