@@ -8,7 +8,7 @@ format:
     theme: [journal, "databrief.scss"]
     favicon: "https://cookcountypublichealth.org/wp-content/uploads/2018/12/cropped-favicon-32x32.png"
     code-tools: false  
-    code-fold: false
+    code-fold: true
     echo: true
     eval: false
     warning: false
@@ -49,6 +49,7 @@ library("sf")         # spatial operations (st_as_sf, st_join, st_drop_geometry)
 library("arcgislayers")
 library("ggplot2")
 library("purrr")
+library("tigris")
 ```
 
 # Background
@@ -526,13 +527,13 @@ write_csv(pws_cook_summary,  file.path(out_dir, "cook_county_pws_violation_summa
 ## already loaded in this session, join the violation summary directly onto
 ## the spatial boundaries on PWSID for mapping.
 
-# library(sf)
-# cook_cws_with_violations <- cook_cws |>
-#   left_join(pws_cook_summary, by = c("PWSID" = "PWSID"))
-#
-# st_write(cook_cws_with_violations,
-#           file.path(out_dir, "cook_county_water_systems_with_violations.gpkg"),
-#           delete_dsn = TRUE)
+library(sf)
+cook_cws_with_violations <- cook_cws |>
+  left_join(pws_cook_summary, by = c("PWSID" = "PWSID"))
+
+st_write(cook_cws_with_violations,
+          file.path("data/spatial/cook_county_water_systems_with_violations.shp"),
+          delete_dsn = TRUE)
 
 ## ---------------------------------------------------------------------------
 ## NOTES

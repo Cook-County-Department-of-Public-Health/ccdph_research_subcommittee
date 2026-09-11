@@ -10,3 +10,4 @@
 
 # Keep everything inside scripts/R
 !/scripts/R/**
+.Rproj.user
