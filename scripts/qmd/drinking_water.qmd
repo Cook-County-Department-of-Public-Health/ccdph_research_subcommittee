@@ -760,6 +760,138 @@ write.csv(summary_by_municipality,
 
 # Analysis
 
+## Interactive Map of Community Water System Violations
+
+To support exploration of how SDWA violation burden is distributed across suburban Cook County's community water system service areas, the compliance summary and service area boundaries joined above as `cook_cws_with_violations` (see [Drinking Water Violation and Compliance]) are rendered here as an interactive `leaflet` map. Service areas are shaded using quintile-based bins of total violation count (`n_violations`), so that shading reflects the empirical distribution of violations across systems rather than a fixed, potentially uninformative interval scheme. The Cook County boundary (`cook_county`) is layered on top as a reference outline. Hovering over a service area surfaces the system's identifying information (name, PWSID, service area type), scale (population served, service connections), and compliance history (total, health-based, unresolved, and Lead and Copper Rule violation counts, plus the most recent violation date). A violation density measure (violations per square mile, calculated from the boundary layer's `Area_SqKM` field) is also included in the hover panel to help distinguish systems with a genuinely concentrated violation burden from large-area systems that may simply accumulate more violations by virtue of serving more territory.
+
+```{r}
+#| label: leaflet-map-cws-violations
+
+library(leaflet)
+library(leaflet.extras)  # addFullscreenControl(), addResetMapButton()
+library(sf)
+library(dplyr)
+
+## ---- 1. Derive violation density (per square mile) --------------------------
+## Area_SqKM is the service area's shape-derived area in square kilometers;
+## convert to square miles (1 sq km = 0.386102159 sq mi) and divide total
+## violations by area. Guard against zero/NA area to avoid Inf/NaN densities
+## for slivers or unresolved boundary geometries.
+
+cook_cws_with_violations <- cook_cws_with_violations |>
+  mutate(
+    area_sqmi = Area_SqKM * 0.386102159,
+    violation_density_sqmi = if_else(
+      !is.na(area_sqmi) & area_sqmi > 0,
+      n_violations / area_sqmi,
+      NA_real_
+    )
+  )
+
+## ---- 2. Quintile bins for total violation count ------------------------------
+## Quantile breaks are data-driven (vs. a fixed interval scheme) so shading
+## reflects the actual distribution of violations across Cook County systems.
+## Many systems may share the same (often zero) violation count, which can
+## collapse some quantile breaks together -- unique() drops any resulting
+## duplicate break so colorBin() receives strictly increasing bin edges.
+
+violation_bins <- quantile(
+  cook_cws_with_violations$n_violations,
+  probs = seq(0, 1, by = 0.2),
+  na.rm = TRUE
+) |>
+  unique()
+
+violation_pal <- colorBin(
+  palette = "viridis",
+  domain = cook_cws_with_violations$n_violations,
+  na.color = "transparent",
+  bins = violation_bins,
+  reverse = TRUE
+)
+
+## ---- 3. Hover labels ----------------------------------------------------------
+
+cws_labels <- sprintf(
+  "<strong>%s</strong><br/>
+  PWS ID: %s<br/>
+  Service area type: %s<br/>
+  Population served: %s<br/>
+  Service connections: %s<br/>
+  Violations (total): %s<br/>
+  Health-based violations: %s<br/>
+  Unresolved violations: %s<br/>
+  Lead and Copper Rule violations: %s<br/>
+  Most recent violation: %s<br/>
+  Violation density (per sq mi): %s",
+  cook_cws_with_violations$PWS_Name,
+  cook_cws_with_violations$PWSID,
+  cook_cws_with_violations$Service_Area_Type,
+  format(cook_cws_with_violations$Population_Served_Count, big.mark = ","),
+  format(cook_cws_with_violations$Service_Connections_Count, big.mark = ","),
+  format(cook_cws_with_violations$n_violations, big.mark = ","),
+  format(cook_cws_with_violations$n_health_based, big.mark = ","),
+  format(cook_cws_with_violations$n_unresolved, big.mark = ","),
+  format(cook_cws_with_violations$n_lead_copper_rule, big.mark = ","),
+  as.character(cook_cws_with_violations$most_recent_violation),
+  formatC(cook_cws_with_violations$violation_density_sqmi, format = "f", digits = 2, big.mark = ",")
+) |>
+  lapply(htmltools::HTML)
+
+## ---- 4. Build the interactive map ---------------------------------------------
+
+leaflet() |>
+  addProviderTiles(providers$CartoDB.Positron, group = "Positron (minimal)") |>
+  addProviderTiles(providers$Esri.WorldImagery, group = "World Imagery (satellite)") |>
+  addPolygons(
+    data = cook_cws_with_violations |> st_transform(crs = 4326),
+    group = "Water System Violations",
+    fillColor = ~violation_pal(n_violations),
+    weight = 0.5,
+    opacity = 0.5,
+    color = "white",
+    dashArray = "3",
+    fillOpacity = 0.7,
+    highlight = highlightOptions(
+      weight = 3,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 1,
+      bringToFront = TRUE
+    ),
+    label = cws_labels,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "13px",
+      direction = "auto"
+    )
+  ) |>
+  addPolylines(
+    data = cook_county |> st_transform(crs = 4326),
+    stroke = TRUE,
+    weight = 2.5,
+    opacity = 1,
+    fillOpacity = 0,
+    color = "black",
+    group = "Cook County Boundary"
+  ) |>
+  addLegend(
+    "bottomleft",
+    pal = violation_pal,
+    values = cook_cws_with_violations$n_violations,
+    title = "SDWA Violations<br>(count, quintile bins)",
+    opacity = 1
+  ) |>
+  addScaleBar(position = "bottomright") |>
+  addFullscreenControl() |>
+  addResetMapButton() |>
+  addLayersControl(
+    baseGroups = c("Positron (minimal)", "World Imagery (satellite)"),
+    overlayGroups = c("Water System Violations", "Cook County Boundary"),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+```
+
 # Discussion
 
 # Conclusion
