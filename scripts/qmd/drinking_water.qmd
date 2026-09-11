@@ -50,6 +50,8 @@ library("arcgislayers")
 library("ggplot2")
 library("purrr")
 library("tigris")
+library(leaflet)
+library(leaflet.extras)  # addFullscreenControl(), addResetMapButton()
 ```
 
 # Background
@@ -766,11 +768,7 @@ To support exploration of how SDWA violation burden is distributed across suburb
 
 ```{r}
 #| label: leaflet-map-cws-violations
-
-library(leaflet)
-library(leaflet.extras)  # addFullscreenControl(), addResetMapButton()
-library(sf)
-library(dplyr)
+#| eval: true
 
 ## ---- 1. Derive violation density (per square mile) --------------------------
 ## Area_SqKM is the service area's shape-derived area in square kilometers;
