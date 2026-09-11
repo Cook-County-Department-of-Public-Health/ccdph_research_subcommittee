@@ -24,6 +24,7 @@ format:
     interlinespace: -0.75em
     embed-resources: true
 bibliography: "references.bib"
+csl: "apa.csl"
 editor_options: 
   chunk_output_type: console
 ---
@@ -111,7 +112,7 @@ and financial (TMF) capacity—may struggle both to generate adequate local
 fee revenue and to compete for state funds requiring the very
 administrative capacity they lack. This tension is sharpened by the
 federal Lead and Copper Rule Improvements (LCRI), finalized by EPA in
-October 2024, which generally requires replacement within 10 years—a
+October 2024 [@epa2024lcri], which generally requires replacement within 10 years—a
 substantially shorter window than Illinois's own statutory timeline
 permits for many systems [@illinois2021]. For suburban Cook County water
 agencies serving economically challenged populations, this means the more
@@ -187,11 +188,11 @@ statutory deadlines.
 
 ## Public Water System Service Area Boundaries
 
-As an initial step in mapping jurisdictional responsibility for drinking water in suburban Cook County, service area boundaries were obtained from the U.S. Environmental Protection Agency's (EPA) Public Water System Service Area Boundaries dataset (Version 3, released March 2026). This national geospatial dataset combines service area boundaries published by state agencies and individual water systems with EPA-modeled boundaries generated for systems where authoritative state data was unavailable. The dataset covers over 44,000 community water systems nationally, representing approximately 99% of the population served by community water systems in the United States, and additionally maps transient and non-transient non-community water systems (e.g., schools, workplaces, and other facilities with their own water supply) at the parcel level.
+As an initial step in mapping jurisdictional responsibility for drinking water in suburban Cook County, service area boundaries were obtained from the U.S. Environmental Protection Agency's (EPA) Public Water System Service Area Boundaries dataset (Version 3, released March 2026) [@epa2026pwsboundaries]. This national geospatial dataset combines service area boundaries published by state agencies and individual water systems with EPA-modeled boundaries generated for systems where authoritative state data was unavailable. The dataset covers over 44,000 community water systems nationally, representing approximately 99% of the population served by community water systems in the United States, and additionally maps transient and non-transient non-community water systems (e.g., schools, workplaces, and other facilities with their own water supply) at the parcel level.
 
-Each mapped service area is linked to its system's federal Public Water System Identification number (PWSID), enabling direct integration with compliance and violation records maintained in the EPA's Safe Drinking Water Information System (SDWIS). This linkage allows regulatory compliance history to be layered spatially onto jurisdictional boundaries, supporting analysis of whether violations cluster within particular governance types or geographic areas of suburban Cook County.
+Each mapped service area is linked to its system's federal Public Water System Identification number (PWSID), enabling direct integration with compliance and violation records maintained in the EPA's Safe Drinking Water Information System (SDWIS) [@epaecho2026]. This linkage allows regulatory compliance history to be layered spatially onto jurisdictional boundaries, supporting analysis of whether violations cluster within particular governance types or geographic areas of suburban Cook County.
 
-Boundaries were retrieved programmatically via the dataset's ArcGIS REST Feature Service and clipped to the Cook County study area. Because the dataset combines authoritative and EPA-modeled boundaries, systems were flagged by boundary source (state/utility-sourced vs. EPA-modeled) to account for potential differences in spatial accuracy across the study area; this distinction is reported where relevant to interpretation of findings.
+Boundaries were retrieved programmatically via the dataset's ArcGIS REST Feature Service and clipped to a Cook County study area boundary drawn from the U.S. Census Bureau's cartographic boundary files [@uscensus2023counties]. Because the dataset combines authoritative and EPA-modeled boundaries, systems were flagged by boundary source (state/utility-sourced vs. EPA-modeled) to account for potential differences in spatial accuracy across the study area; this distinction is reported where relevant to interpretation of findings.
 
 ```{r}
 ## ---------------------------------------------------------------------------
@@ -375,7 +376,7 @@ ggplot() +
 
 ## Drinking Water Violation and Compliance
 
-Water quality violation and enforcement data were obtained from the U.S. EPA's Enforcement and Compliance History Online (ECHO) system, which incorporates records from the Safe Drinking Water Information System (SDWIS). SDWIS contains system-level monitoring, violation, and enforcement data reported by states to EPA under the Safe Drinking Water Act, refreshed quarterly. Data were retrieved via ECHO's bulk SDWA download, which was filtered to public water systems with an Illinois-prefixed system identifier (PWSID), then further narrowed to systems identified as serving Cook County based on the county-served field in SDWIS's geographic area records.
+Water quality violation and enforcement data were obtained from the U.S. EPA's Enforcement and Compliance History Online (ECHO) system, which incorporates records from the Safe Drinking Water Information System (SDWIS) [@epaecho2026]. SDWIS contains system-level monitoring, violation, and enforcement data reported by states to EPA under the Safe Drinking Water Act, refreshed quarterly. Data were retrieved via ECHO's bulk SDWA download, which was filtered to public water systems with an Illinois-prefixed system identifier (PWSID), then further narrowed to systems identified as serving Cook County based on the county-served field in SDWIS's geographic area records.
 
 Because this county designation is self-reported by states and water systems and may be incomplete for some systems, this attribution was cross-checked against a spatial join of PWSID-linked service area boundaries (see prior section) to the Cook County geographic boundary; discrepancies between the two methods were retained and reported rather than reconciled, to avoid understating potential gaps in system-level geographic reporting.
 
@@ -923,6 +924,11 @@ leaflet(width = "100%", height = 700) %>%
 # Discussion
 
 # Conclusion
+
+# References
+
+::: {#refs}
+:::
 
 
 
