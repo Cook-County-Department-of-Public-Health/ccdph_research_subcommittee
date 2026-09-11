@@ -844,6 +844,8 @@ cws_labels <- sprintf(
 
 ## ---- 4. Build the interactive map ---------------------------------------------
 
+CARTO_API_KEY <- "cb1_31xh_1_06fb99adb466f0f5a0392d7d"
+
 leaflet() %>%
   addTiles(
     urlTemplate = paste0(
