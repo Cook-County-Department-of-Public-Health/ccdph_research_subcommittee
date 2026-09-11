@@ -62,10 +62,27 @@ library(leaflet.extras)  # addFullscreenControl(), addResetMapButton()
 ## cook_county and cook_cws_with_violations are produced by
 ## drinking_water_dataprep.R, which runs the full Methodology-section data
 ## pipeline (EPA service area boundaries + SDWIS/ECHO violation join) and
-## saves only these two essential objects for rendering this document. Run
-## that script (from this directory) to regenerate data/drinking_water_dataprep.RData
-## after a data refresh.
-load("data/drinking_water_dataprep.RData")
+## saves only these two essential objects for rendering this document.
+##
+## This is a separate, network-heavy step (EPA ArcGIS pulls plus a ~400+ MB
+## ECHO bulk download) -- it is not run automatically as part of rendering
+## this document. Before rendering for the first time, or after a data
+## refresh, run it from this directory (scripts/qmd/):
+##   Rscript drinking_water_dataprep.R
+## which (re)creates data/drinking_water_dataprep.RData below.
+
+rdata_path <- "data/drinking_water_dataprep.RData"
+if (!file.exists(rdata_path)) {
+  stop(
+    "Prepared analysis data not found at '", rdata_path, "'.\n",
+    "Run drinking_water_dataprep.R first (from the scripts/qmd/ directory):\n",
+    "    Rscript drinking_water_dataprep.R\n",
+    "This regenerates data/drinking_water_dataprep.RData (cook_county, ",
+    "cook_cws_with_violations) required by this document's Analysis section.",
+    call. = FALSE
+  )
+}
+load(rdata_path)
 ```
 
 # Background
