@@ -47,10 +47,22 @@ library(tidyr)      # replace_na
 library(stringr)    # str_starts, str_to_upper
 library(readr)      # read_csv, write_csv
 library(sf)         # spatial operations
-library(arcgislayers)
+library(httr2)      # ArcGIS REST Feature Service queries (see fetch_arcgis_features())
+library(geojsonsf)  # parse ArcGIS REST GeoJSON responses into sf
 library(purrr)      # pmap, compact, map
 library(tigris)     # counties()
 library(ggplot2)    # quick visual QA plot
+
+## NOTE ON arcgislayers: this script deliberately does NOT use the
+## arcgislayers package. arcgislayers requires rlang >= 1.3.0, and on
+## systems where administrative policy pins rlang to an older version
+## (e.g. 1.1.7), calling any arcgislayers function (even arc_open()) fails
+## with "namespace 'rlang' ... is already loaded, but >= 1.3.0 is required"
+## -- rlang cannot be reloaded at a different version mid-session once any
+## other attached package (dplyr, tidyr, etc.) has already loaded it. All
+## ArcGIS REST Feature Service access below instead goes through
+## fetch_arcgis_features() (httr2 + geojsonsf), which has no rlang version
+## requirement beyond what dplyr/tidyr already need.
 
 ## EPA's Public Water System Service Area Boundaries dataset includes some
 ## invalid polygons (self-intersections, duplicate vertices), especially
@@ -85,56 +97,45 @@ cook_county <- counties(state = "IL", cb = TRUE, year = 2023) %>%
   filter(NAME == "Cook") %>%
   st_transform(4326)
 
-## ---- 1.2 PREFERRED METHOD: arcgislayers package -------------------------------
-## arcgislayers handles pagination, field selection, and spatial filtering
-## automatically -- the modern, maintained way to pull an Esri
-## FeatureServer/MapServer into R as an sf object.
+## ---- 1.2 ArcGIS REST Feature Service helpers (httr2 + geojsonsf) ---------------
+## No arcgislayers dependency -- see the rlang note in Section 0 above. These
+## two helpers cover everything arcgislayers would otherwise provide for this
+## script: inspecting a FeatureServer's layer list, and paginated feature
+## retrieval with an optional bounding-box spatial filter.
 
-if (!requireNamespace("arcgislayers", quietly = TRUE)) {
-  install.packages("arcgislayers", repos = c("https://r-arcgis.r-universe.dev", "https://cloud.r-project.org"))
+# Lightweight replacement for arc_open() + print(): fetch and print the
+# FeatureServer's layer listing so the correct layer index (there may be
+# more than one, e.g. active vs. historical) can be confirmed.
+print_arcgis_layers <- function(base_url) {
+  service_info <- request(base_url) %>%
+    req_url_query(f = "json") %>%
+    req_perform() %>%
+    resp_body_json()
+
+  layers <- service_info$layers
+  if (length(layers) == 0) {
+    message("No layers reported for ", base_url)
+    return(invisible(NULL))
+  }
+
+  message("Layers available on ", base_url, ":")
+  for (lyr in layers) {
+    message(sprintf("  [%s] %s", lyr$id, lyr$name))
+  }
+  invisible(service_info)
 }
 
-# List the layers/sublayers on this FeatureServer to confirm the correct
-# layer index (there may be more than one, e.g. active vs. historical).
-service <- arc_open(feature_server_url)
-print(service)
-
-# Layer 0 is the main community water system boundaries layer.
-cws_layer <- arc_open(paste0(feature_server_url, "/0"))
-
-# Pull only features that intersect the Cook County boundary.
-cook_cws_raw <- arc_select(
-  cws_layer,
-  filter_geom = st_as_sfc(st_bbox(cook_county)),  # bounding-box prefilter
-  fields = NULL                                    # NULL = all fields
-)
-
-# Repair invalid geometries (self-intersections, duplicate vertices).
-cook_cws_valid <- cook_cws_raw %>%
-  st_make_valid()
-
-n_invalid <- sum(!st_is_valid(cook_cws_valid))
-if (n_invalid > 0) {
-  message(n_invalid, " feature(s) remain invalid after st_make_valid(); ",
-          "these will be dropped before clipping.")
-  cook_cws_valid <- cook_cws_valid[st_is_valid(cook_cws_valid), ]
-}
-
-cook_cws <- cook_cws_valid %>%
-  st_filter(cook_county, .predicate = st_intersects)  # precise clip to county polygon
-
-## ---- 1.3 FALLBACK METHOD: manual REST query with pagination -------------------
-## Use only if arcgislayers is unavailable/fails (e.g. restricted network).
-## Esri REST services usually cap each response at ~1,000-2,000 records
-## (maxRecordCount), so page through results with resultOffset.
-
-fallback_download <- function(base_url, layer_id = 0, where = "1=1",
-                               geometry_sf = NULL, batch_size = 1000) {
-  library(httr2)
-  library(geojsonsf)
-
+# Replacement for arc_select(): paginated ArcGIS REST Feature Service query,
+# returned as an sf object. Esri REST services usually cap each response at
+# ~1,000-2,000 records (maxRecordCount), so page through results with
+# resultOffset until a short/empty page signals the last one.
+fetch_arcgis_features <- function(base_url, layer_id = 0, where = "1=1",
+                                   out_fields = "*", geometry_sf = NULL,
+                                   batch_size = 1000) {
   query_url <- paste0(base_url, "/", layer_id, "/query")
 
+  # Bounding-box prefilter, mirroring arc_select(filter_geom = ...): a cheap
+  # server-side narrowing pass, refined with an exact st_filter() afterward.
   geom_param <- NULL
   if (!is.null(geometry_sf)) {
     bb <- st_bbox(st_transform(geometry_sf, 4326))
@@ -150,7 +151,7 @@ fallback_download <- function(base_url, layer_id = 0, where = "1=1",
     req <- request(query_url) %>%
       req_url_query(
         where = where,
-        outFields = "*",
+        outFields = out_fields,
         f = "geojson",
         resultOffset = offset,
         resultRecordCount = batch_size,
@@ -171,18 +172,48 @@ fallback_download <- function(base_url, layer_id = 0, where = "1=1",
     offset <- offset + batch_size
   }
 
+  if (length(all_features) == 0) {
+    return(all_features)  # empty list -- caller decides how to handle
+  }
+
   dplyr::bind_rows(all_features) %>%
     st_as_sf() %>%
     st_make_valid()
 }
 
-# Uncomment to use the fallback instead of arcgislayers:
-# cook_cws <- fallback_download(
-#   base_url    = feature_server_url,
-#   layer_id    = 0,
-#   geometry_sf = cook_county
-# ) %>%
-#   st_filter(cook_county, .predicate = st_intersects)
+## ---- 1.3 Pull Cook County community water system boundaries -------------------
+
+# List the layers/sublayers on this FeatureServer to confirm the correct
+# layer index (there may be more than one, e.g. active vs. historical).
+print_arcgis_layers(feature_server_url)
+
+# Layer 0 is the main community water system boundaries layer. Pull only
+# features whose bounding box intersects the Cook County boundary.
+cook_cws_raw <- fetch_arcgis_features(
+  base_url    = feature_server_url,
+  layer_id    = 0,
+  geometry_sf = cook_county
+)
+
+if (length(cook_cws_raw) == 0 || nrow(cook_cws_raw) == 0) {
+  stop("No community water system boundary features were returned for the ",
+       "Cook County bounding box -- check feature_server_url and the ",
+       "FeatureServer's availability before continuing.")
+}
+
+# Repair invalid geometries (self-intersections, duplicate vertices).
+cook_cws_valid <- cook_cws_raw %>%
+  st_make_valid()
+
+n_invalid <- sum(!st_is_valid(cook_cws_valid))
+if (n_invalid > 0) {
+  message(n_invalid, " feature(s) remain invalid after st_make_valid(); ",
+          "these will be dropped before clipping.")
+  cook_cws_valid <- cook_cws_valid[st_is_valid(cook_cws_valid), ]
+}
+
+cook_cws <- cook_cws_valid %>%
+  st_filter(cook_county, .predicate = st_intersects)  # precise clip to county polygon
 
 ## ---- 1.4 Save and quick visual QA ---------------------------------------------
 
@@ -423,8 +454,13 @@ pull_municipal_lsl <- function(municipality, url, layer_id) {
   }
 
   tryCatch({
-    layer <- arc_open(paste0(url, "/", layer_id))
-    data  <- arc_select(layer) %>% st_make_valid()
+    # fetch_arcgis_features() (Section 1.2) -- no spatial filter here, since
+    # each municipal endpoint already covers just that municipality.
+    data <- fetch_arcgis_features(base_url = url, layer_id = layer_id)
+    if (length(data) == 0 || nrow(data) == 0) {
+      message(municipality, ": pull returned no features -- skipping.")
+      return(NULL)
+    }
     data$municipality <- municipality
     data
   }, error = function(e) {
