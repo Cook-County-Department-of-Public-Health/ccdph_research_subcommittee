@@ -51,8 +51,8 @@ library("arcgislayers")
 library("ggplot2")
 library("purrr")
 library("tigris")
-library(leaflet)
-library(leaflet.extras)  # addFullscreenControl(), addResetMapButton()
+library("leaflet")
+library("leaflet.extras")  # addFullscreenControl(), addResetMapButton()
 ```
 
 ```{r}
