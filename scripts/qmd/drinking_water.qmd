@@ -604,185 +604,95 @@ st_write(cook_cws_with_violations,
 ```
 
 ## Lead Service Lines
+
+Lead service line data were obtained from the Illinois Environmental Protection Agency's (IEPA) Service Line Material Inventory Reports [@iepa2025lsl]. Under the Lead Service Line Replacement and Notification Act [@illinois2021], every community water supply in Illinois must submit an annual inventory of the service lines connected to its distribution system, classified by material. IEPA publishes these submissions as a single statewide file containing one record per water system per reporting year (2017–2024). Each record gives the system's total service connections and the number of lines that are lead, galvanized, copper (with or without lead solder), cast or ductile iron or transite, plastic, of unknown material, or of unknown material but known not to be lead. Records are keyed to the system's PWSID, which allows direct linkage to the service area boundaries and SDWIS compliance data described above.
+
+The statewide file was filtered to water systems that IEPA lists as located in Cook County, together with any systems identified as serving Cook County through SDWIS or through the service area boundaries, so that systems listed under a neighboring county but serving Cook County residents were retained. Service line materials were then collapsed into five categories: lead; galvanized; unknown material; non-lead (copper, iron or transite, plastic, and unknown-but-not-lead); and unclassified lines, meaning connections not assigned to any material category. The unclassified category is needed because the reporting form changed over time. Reports for 2024 include only lead and unknown counts, and some 2022 reports do not fully break down the system total. For each system and year, the shares of lines that are lead, of unknown material, and lead, galvanized, or unknown combined (i.e., lines that may require replacement) were calculated relative to total service connections.
+
+Because not all systems report every year, each system's most recent inventory was identified and joined by PWSID to the service area boundaries, with the reporting year retained so that comparisons across systems account for differences in reporting year. These inventories are system-level counts rather than line- or parcel-level locations; they indicate how many lead lines a system has, but not where those lines are within its service area. Counts are self-reported, and large numbers of lines of unknown material reflect incomplete field verification rather than confirmed presence or absence of lead.
+
 ```{r}
 ## ---------------------------------------------------------------------------
-## Aggregate municipal Lead Service Line Inventory layers across suburban
-## Cook County into a single combined spatial dataset.
+## Standardize IEPA Service Line Material Inventory Reports for Cook County
+## water systems and join each system's most recent inventory to the
+## service area boundaries.
 ##
-## CONTEXT: Unlike drinking water compliance data (SDWIS/ECHO) or water
-## system service area boundaries (EPA national dataset), there is no
-## existing national or state-level aggregation of parcel/line-level lead
-## service line inventories. Each municipality publishes its own inventory
-## independently, typically as an Esri "Lead Service Line Inventory"
-## solution (Experience Builder or Web AppBuilder app backed by a hosted
-## FeatureServer). This script assumes those per-municipality FeatureServer
-## URLs have been manually identified (see notes below) and aggregates them.
+## Source: Illinois EPA, Lead Service Line Information
+## https://epa.illinois.gov/topics/drinking-water/public-water-users/lead-service-line-information.html
+## File: ServiceLineMaterialInventoryReports.csv (downloaded manually and
+## saved to the data/ folder).
 ## ---------------------------------------------------------------------------
 
-## ---- 0. Setup ----------------------------------------------------------------
-
-library(sf)
 library(dplyr)
-library(purrr)
-library(arcgislayers)   # install from https://r-arcgis.r-universe.dev if needed
+library(readr)
 
-sf::sf_use_s2(FALSE)     # avoid invalid-geometry errors, as with the boundary data
+## ---- 1. Read the statewide inventory file ------------------------------------
+## One row per water system (FacilityId = PWSID) per reporting year.
 
-## ---- 1. Config table of municipal endpoints -----------------------------------
-## THIS IS THE PART THAT REQUIRES MANUAL COLLECTION.
-##
-## How to find each URL:
-##   1. Open the municipality's public lead service line map in a browser
-##      (Chrome/Edge/Firefox).
-##   2. Open Developer Tools (F12) -> Network tab -> filter for "FeatureServer".
-##   3. Reload the map. A request to a URL ending in .../FeatureServer/query
-##      (or /FeatureServer/0/query, etc.) will appear -- copy everything up
-##      to and including "FeatureServer" (drop the /query and parameters).
-##   4. Also note which layer index (usually 0) holds the actual service
-##      line features vs. any reference/basemap layers.
-##
-## Populate the table below as endpoints are found. Leave feature_server_url
-## as NA for municipalities not yet resolved -- the script will skip them
-## and report what's missing, rather than failing.
+lsl_raw <- read_csv(
+  "data/ServiceLineMaterialInventoryReports.csv",
+  col_types = cols(
+    .default      = col_integer(),
+    FacilityId    = col_character(),
+    County        = col_character(),
+    FacilityName  = col_character(),
+    ReportedDate  = col_character(),
+    ReportingYear = col_integer()
+  )
+) |>
+  mutate(ReportedDate = as.POSIXct(ReportedDate, format = "%m/%d/%Y %I:%M:%S %p",
+                                   tz = "America/Chicago"))
 
-municipal_endpoints <- tibble::tribble(
-  ~municipality,       ~feature_server_url,                                    ~layer_id, ~notes,
-  "Glenview",          NA_character_,                                          0L,        "Experience Builder app confirmed at experience.arcgis.com/experience/f110f2dabfdb46ceb3bd04055de8ee9b; underlying FeatureServer not yet resolved -- likely hosted via GIS Consortium (public.gisconsortium.org) shared backend",
-  "Rolling Meadows",   NA_character_,                                          0L,        "Public map referenced at cityrm.org/935/Lead-Service-Line-Inventory; endpoint not yet resolved",
-  "Algonquin",         NA_character_,                                          0L,        "Public map referenced at algonquin.org; endpoint not yet resolved",
-  "Northbrook",        NA_character_,                                          0L,        "Village publishes inventory but map endpoint not yet resolved",
-  "Elgin",             NA_character_,                                          0L,        "Village publishes an address-lookup map; endpoint not yet resolved",
-  "Clarendon Hills",   NA_character_,                                          0L,        "Endpoint not yet resolved",
-  "Park Ridge",        NA_character_,                                          0L,        "Endpoint not yet resolved",
-  "North Riverside",   NA_character_,                                          0L,        "Endpoint not yet resolved",
-  "Lincolnwood",       NA_character_,                                          NA_integer_, "Publishes inventory only as a static PDF, not an interactive map -- not compatible with this pipeline; would need separate PDF-table extraction"
-)
+## ---- 2. Keep Cook County systems ---------------------------------------------
+## Systems IEPA lists under Cook County, plus any system identified as
+## serving Cook County via SDWIS (cook_pwsids) or the service area
+## boundaries (cook_cws), so cross-county systems are not dropped.
 
-## ---- 2. Standardized field mapping ---------------------------------------------
-## Different municipalities' inventories (even when both built from Esri's
-## "Lead Service Line Inventory" solution template) may use different field
-## names for the same concept, especially if customized locally. Define a
-## mapping so results can be combined into consistent output columns.
-##
-## The Esri template's DEFAULT field names are used as the target schema:
-##   UtilityStatus / CustomerStatus / EntireServiceLineStatus
-##   (values: Lead, Galvanized Requiring Replacement (GRR), Non-Lead, Unknown)
+lsl_cook_raw <- lsl_raw |>
+  filter(County == "Cook" | FacilityId %in% union(cook_pwsids, cook_cws$PWSID))
 
-standard_fields <- c(
-  "UtilityStatus", "CustomerStatus", "EntireServiceLineStatus",
-  "LocationID", "Address"
-)
+## ---- 3. Standardize material categories --------------------------------------
+## 2024 reports include only lead and unknown counts, and some 2022
+## reports are incomplete, so lines not assigned to any category are kept
+## as "unclassified" rather than assumed to be non-lead.
 
-## ---- 3. Pull function for a single municipality --------------------------------
+cook_lsl_history <- lsl_cook_raw |>
+  mutate(
+    lsl_total        = TotalServiceConnections,
+    lsl_lead         = ServicesLead,
+    lsl_galvanized   = ServicesGalvanized,
+    lsl_unknown      = ServicesUnknownMaterial,
+    lsl_non_lead     = ServicesCopperLeadSolder + ServicesCopperNonLeadSolder +
+                       ServicesCastDuctileIronTransite + ServicesPlastic +
+                       ServicesUnknownNotLead,
+    lsl_unclassified = pmax(lsl_total - (lsl_lead + lsl_galvanized + lsl_unknown + lsl_non_lead), 0L),
+    lsl_pct_lead            = if_else(lsl_total > 0, lsl_lead / lsl_total, NA_real_),
+    lsl_pct_unknown         = if_else(lsl_total > 0, lsl_unknown / lsl_total, NA_real_),
+    lsl_pct_lead_or_unknown = if_else(lsl_total > 0,
+                                      (lsl_lead + lsl_galvanized + lsl_unknown) / lsl_total,
+                                      NA_real_)
+  )
 
-pull_municipal_lsl <- function(municipality, url, layer_id) {
-  if (is.na(url)) {
-    message(municipality, ": no endpoint on file -- skipping.")
-    return(NULL)
-  }
+## ---- 4. Most recent inventory per system --------------------------------------
 
-  result <- tryCatch({
-    layer <- arc_open(paste0(url, "/", layer_id))
-    data  <- arc_select(layer) |> st_make_valid()
-    data$municipality <- municipality
-    data
-  }, error = function(e) {
-    message(municipality, ": pull failed -- ", conditionMessage(e))
-    NULL
-  })
+cook_lsl_latest <- cook_lsl_history |>
+  group_by(FacilityId) |>
+  arrange(desc(ReportingYear), desc(ReportedDate), .by_group = TRUE) |>
+  slice(1) |>
+  ungroup() |>
+  rename(lsl_reporting_year = ReportingYear)
 
-  result
-}
+## ---- 5. Join to service areas --------------------------------------------------
 
-## ---- 4. Pull all municipalities and combine ------------------------------------
-
-pulled <- municipal_endpoints |>
-  filter(!is.na(feature_server_url)) |>
-  pmap(function(municipality, feature_server_url, layer_id, notes) {
-    pull_municipal_lsl(municipality, feature_server_url, layer_id)
-  }) |>
-  compact()   # drop NULLs (failed/skipped pulls)
-
-if (length(pulled) == 0) {
-  stop("No municipal endpoints were successfully pulled. Populate ",
-       "municipal_endpoints with resolved FeatureServer URLs first.")
-}
-
-## ---- 5. Harmonize schemas before combining --------------------------------------
-## Different municipalities' layers will likely have different attribute
-## sets. Select/rename to the standard schema where present, and flag any
-## fields that couldn't be matched for manual review rather than silently
-## dropping data.
-
-harmonize <- function(df) {
-  present <- intersect(standard_fields, names(df))
-  missing <- setdiff(standard_fields, names(df))
-  if (length(missing) > 0) {
-    message(unique(df$municipality), ": missing expected fields -- ",
-            paste(missing, collapse = ", "))
-  }
-  df |> select(municipality, all_of(present), geometry)
-}
-
-cook_lsl_combined <- map(pulled, harmonize) |>
-  bind_rows() |>
-  st_as_sf()
-
-## ---- 6. Summary and save ---------------------------------------------------------
-
-summary_by_municipality <- cook_lsl_combined |>
-  st_drop_geometry() |>
-  count(municipality, EntireServiceLineStatus)
-
-print(summary_by_municipality)
-
-out_dir <- "/mnt/user-data/outputs"
-dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
-
-st_write(cook_lsl_combined,
-         file.path(out_dir, "cook_county_lead_service_lines_combined.gpkg"),
-         delete_dsn = TRUE)
-write.csv(summary_by_municipality,
-          file.path(out_dir, "cook_county_lsl_summary_by_municipality.csv"),
-          row.names = FALSE)
-
-## ---------------------------------------------------------------------------
-## NOTES
-## ---------------------------------------------------------------------------
-## - COVERAGE IS NECESSARILY PARTIAL. Only ~130 suburban Cook municipalities
-##   have any water system at all; of those, only some have built a public-
-##   facing interactive map (vs. PDF-only or no public inventory at all).
-##   Report the count of municipalities with (a) no public inventory found,
-##   (b) PDF-only inventory, (c) interactive map but endpoint unresolved,
-##   and (d) successfully aggregated -- this fourfold breakdown is itself a
-##   meaningful empirical finding about inventory transparency/fragmentation,
-##   independent of what the lead-line data itself shows.
-##
-## - SEVERAL MUNICIPALITIES MAY SHARE ONE BACKEND. If a cluster of towns use
-##   the GIS Consortium (public.gisconsortium.org) or another shared vendor,
-##   check whether their FeatureServers live under a common
-##   services*.arcgis.com/<org-id>/... root -- if so, one properly-scoped
-##   query against that org's REST catalog might surface several
-##   municipalities' layers at once rather than needing each found
-##   individually.
-##
-## - FIELD DEFINITIONS DIFFER BY MUNICIPALITY even when both use Esri's
-##   template, if local staff customized domains/labels (as seen in Esri
-##   Community forum discussions of this exact issue). Manually verify each
-##   municipality's field values map to the same underlying categories
-##   (Lead / GRR / Non-Lead / Unknown) before combining -- a value coded
-##   "Unknown" in one town's system and "Lead Status Unknown" in another's
-##   should be treated as equivalent, but don't assume this without checking.
-##
-## - THIS APPROACH DOES NOT SCALE WELL to all ~130 municipalities without
-##   either (a) a research assistant spending time on each town's map, or
-##   (b) direct outreach to IEPA requesting the underlying submitted
-##   inventories in bulk, which -- since IEPA already collects these
-##   annually under 415 ILCS 5/17.12 -- may be a far more efficient path
-##   than reverse-engineering ~100+ individual web maps.
-## ---------------------------------------------------------------------------
+cook_cws_with_violations <- cook_cws_with_violations |>
+  left_join(
+    cook_lsl_latest |>
+      select(PWSID = FacilityId, lsl_reporting_year, lsl_total, lsl_lead,
+             lsl_galvanized, lsl_unknown, lsl_non_lead, lsl_unclassified,
+             lsl_pct_lead, lsl_pct_unknown, lsl_pct_lead_or_unknown),
+    by = "PWSID"
+  )
 ```
-
 
 # Analysis
 
