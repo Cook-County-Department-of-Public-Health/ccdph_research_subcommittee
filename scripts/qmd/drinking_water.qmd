@@ -60,10 +60,11 @@ library("leaflet.extras")  # addFullscreenControl(), addResetMapButton()
 #| eval: true
 #| echo: false
 
-## cook_county and cook_cws_with_violations are produced by
-## drinking_water_dataprep.qmd, which runs the full Methodology-section data
-## pipeline (EPA service area boundaries + SDWIS/ECHO violation join) and
-## saves only these two essential objects for rendering this document. Render
+## cook_county, cook_cws_with_violations, and ucmr5_cook_system_contaminant
+## are produced by drinking_water_dataprep.qmd, which runs the full
+## Methodology-section data pipeline (EPA service area boundaries, SDWIS/ECHO
+## violations, IEPA lead service line inventories, and UCMR 5 results) and
+## saves only these essential objects for rendering this document. Render
 ## that document (from this directory) to regenerate data/drinking_water_dataprep.RData
 ## after a data refresh.
 load("../../data/drinking_water_dataprep.RData")
@@ -694,6 +695,84 @@ cook_cws_with_violations <- cook_cws_with_violations |>
   )
 ```
 
+## Unregulated Contaminant Monitoring (UCMR 5)
+
+Data on emerging contaminants were obtained from EPA's fifth Unregulated Contaminant Monitoring Rule (UCMR 5) occurrence data [@epa2026ucmr5]. Under UCMR 5, all community water systems serving more than 3,300 people, along with a representative sample of smaller systems, sampled their drinking water between 2023 and 2025 for 30 contaminants that were not fully regulated when monitoring began: 29 per- and polyfluoroalkyl substances (PFAS) and lithium. EPA publishes the results in periodic releases as laboratories report them. Each result records the system (PWSID), sampling location, collection date, contaminant, EPA's minimum reporting level (MRL), and whether the contaminant was measured at or above that level.
+
+The most recent release was downloaded and filtered to systems identified as serving Cook County through SDWIS or the service area boundaries. Concentrations were standardized to nanograms per liter (ng/L), and results below the MRL were treated as non-detects. For each system and contaminant, the number of samples and detections, the average concentration (with non-detects counted as zero), and the maximum detected concentration were calculated.
+
+Because UCMR 5 contaminants were unregulated during monitoring, results were compared with health-based reference levels rather than enforceable standards. For PFAS, these were the maximum contaminant levels (MCLs) in EPA's 2024 PFAS drinking water regulation [@epa2024pfas]: 4.0 ng/L for PFOA and PFOS; 10 ng/L for PFHxS, PFNA, and HFPO-DA (GenX); and a Hazard Index of 1 for mixtures of PFHxS, PFNA, HFPO-DA, and PFBS. EPA has since announced its intent to retain the PFOA and PFOS limits while reconsidering the others, so all are used here as screening values. For lithium, EPA's health reference level of 10 µg/L was used. Because MCL compliance is based on a running annual average, each system's average concentration was used for screening, and maximum single results were reported separately. Values above a reference level indicate a potential concern, not a violation. The system-level summary was joined by PWSID to the service area boundaries.
+
+```{r}
+## ---------------------------------------------------------------------------
+## Download and summarize UCMR 5 (PFAS and lithium) results for Cook County
+## water systems.
+##
+## Source: U.S. EPA, Occurrence Data from the Unregulated Contaminant
+## Monitoring Rule (UCMR 5)
+## https://www.epa.gov/dwucmr/occurrence-data-unregulated-contaminant-monitoring-rule#5
+## ---------------------------------------------------------------------------
+
+library(dplyr)
+library(readr)
+library(stringr)
+
+## ---- 1. Download the latest release and read the results file ---------------
+## The ZIP's URL changes with each release; drinking_water_dataprep.qmd finds
+## the current link on the EPA page. UCMR5_All.txt is tab-delimited.
+
+unzip("data/tabular/ucmr5-occurrence-data.zip", files = "UCMR5_All.txt",
+      exdir = "data/tabular")
+
+ucmr5_raw <- read_tsv("data/tabular/UCMR5_All.txt",
+                      col_types = cols(.default = col_character()),
+                      locale = locale(encoding = "latin1"))
+
+## ---- 2. Keep Cook County systems and standardize results ----------------------
+## "=" means measured at or above the minimum reporting level (MRL); "<"
+## means below it (non-detect, counted as zero when averaging).
+
+ucmr5_cook <- ucmr5_raw |>
+  filter(PWSID %in% union(cook_pwsids, cook_cws$PWSID)) |>
+  mutate(
+    result_ngL      = as.numeric(AnalyticalResultValue) *
+                      if_else(str_detect(Units, "ng"), 1, 1000),
+    detected        = AnalyticalResultsSign == "=" & !is.na(result_ngL),
+    result_ngL_nd0  = if_else(detected, result_ngL, 0),
+    contaminant_key = str_to_upper(str_replace_all(Contaminant, "[^A-Za-z0-9]", ""))
+  )
+
+## ---- 3. Health-based reference levels (screening values, ng/L) --------------
+
+ucmr5_reference <- tibble::tribble(
+  ~contaminant_key, ~reference_ngL, ~hi_hbwc_ngL,
+  "PFOA",     4.0,   NA,
+  "PFOS",     4.0,   NA,
+  "PFHXS",   10,     10,
+  "PFNA",    10,     10,
+  "HFPODA",  10,     10,
+  "PFBS",    NA,   2000,
+  "LITHIUM", 10000,  NA
+)
+
+## ---- 4. Summarize by system and contaminant -----------------------------------
+
+ucmr5_cook_system_contaminant <- ucmr5_cook |>
+  group_by(PWSID, Contaminant, contaminant_key) |>
+  summarise(n_samples = n(),
+            n_detects = sum(detected),
+            mean_ngL  = mean(result_ngL_nd0, na.rm = TRUE),
+            max_ngL   = if (any(detected)) max(result_ngL[detected]) else NA_real_,
+            .groups = "drop") |>
+  left_join(ucmr5_reference, by = "contaminant_key") |>
+  mutate(mean_exceeds_reference = !is.na(reference_ngL) & mean_ngL > reference_ngL)
+
+## A one-row-per-system summary (PFAS detected, PFOA/PFOS averages, Hazard
+## Index, MCL and lithium HRL screening flags) is then joined by PWSID to
+## cook_cws_with_violations as the ucmr5_* fields; see
+## drinking_water_dataprep.qmd for the full code.
+```
+
 # Analysis
 
 ## Study Scope
@@ -811,6 +890,93 @@ Taken together, these patterns indicate that drinking water compliance problems 
 
 According to each system's most recent IEPA Service Line Material Inventory Report [@iepa2025lsl], the systems IEPA lists in the CCDPH jurisdiction report about 686,000 service connections, of which about 107,600 (16%) are lead and about 129,100 (19%) are of unknown material. Counting galvanized lines as well, about 35% of service lines may require replacement. Lead lines are reported by 75 of these 154 systems and are heavily concentrated: Cicero (about 15,200), Des Plaines (11,500), Evergreen Park (6,600), Maywood (5,000), and Calumet City (4,400) together account for nearly 40% of the jurisdiction's known lead lines. The independent health districts report a higher share, with about 30% of lines lead and about 66% lead, galvanized, or unknown. Systems' most recent reports range from 2020 to 2024 (most are from 2022 or 2024), so these figures combine inventories from different years.
 
+### Unregulated Contaminants (UCMR 5)
+
+UCMR 5 results show where PFAS and lithium were found in suburban drinking water during 2023–2025 monitoring, and which systems' average concentrations exceed the health-based screening levels described in [Unregulated Contaminant Monitoring (UCMR 5)]. The figures below are calculated from the most recent UCMR 5 release each time this document is rendered. Small systems that were not selected for UCMR 5 monitoring, and systems whose results EPA has not yet released, are not included.
+
+```{r}
+#| label: ucmr5-summary
+#| eval: true
+#| echo: false
+#| output: asis
+
+ucmr5_available <- exists("ucmr5_cook_system_contaminant") &&
+  "ucmr5_n_samples" %in% names(suburban_cws)
+
+if (!ucmr5_available) {
+  cat("::: {.callout-note}\n",
+      "UCMR 5 results are not in the loaded data. Re-render ",
+      "`drinking_water_dataprep.qmd` to add them.\n",
+      ":::\n", sep = "")
+} else {
+  ucmr_sys <- suburban_cws %>%
+    sf::st_drop_geometry() %>%
+    filter(!is.na(ucmr5_n_samples))
+
+  fmt_pop <- function(x) format(round(sum(x, na.rm = TRUE), -3), big.mark = ",")
+  fmt_pct <- function(n, d) if (d > 0) sprintf("%.0f%%", 100 * n / d) else "NA"
+
+  n_sys     <- nrow(ucmr_sys)
+  n_pfas    <- sum(ucmr_sys$ucmr5_any_pfas_detected, na.rm = TRUE)
+  above_mcl <- ucmr_sys %>% filter(ucmr5_pfas_above_mcl %in% TRUE)
+  above_hrl <- ucmr_sys %>% filter(ucmr5_lithium_above_hrl %in% TRUE)
+
+  name_list <- function(df) {
+    if (nrow(df) == 0) return("")
+    nm <- sort(df$PWS_Name)
+    if (length(nm) > 10) nm <- c(nm[1:10], sprintf("and %d others", length(nm) - 10))
+    paste0(" (", paste(nm, collapse = ", "), ")")
+  }
+
+  cat(sprintf(paste0(
+    "UCMR 5 results are available for %d of the %d suburban service areas analyzed, ",
+    "serving about %s residents. At least one PFAS was detected at or above EPA's ",
+    "minimum reporting level in %d of these systems (%s). Average PFAS concentrations ",
+    "exceeded a 2024 MCL or the Hazard Index in %d systems serving about %s residents%s. ",
+    "Average lithium exceeded EPA's health reference level of 10 µg/L in %d systems ",
+    "serving about %s residents%s.\n\n"),
+    n_sys, nrow(suburban_cws), fmt_pop(ucmr_sys$Population_Served_Count),
+    n_pfas, fmt_pct(n_pfas, n_sys),
+    nrow(above_mcl), fmt_pop(above_mcl$Population_Served_Count), name_list(above_mcl),
+    nrow(above_hrl), fmt_pop(above_hrl$Population_Served_Count), name_list(above_hrl)
+  ))
+
+  ucmr5_contaminant_tbl <- ucmr5_cook_system_contaminant %>%
+    filter(PWSID %in% ucmr_sys$PWSID) %>%
+    group_by(Contaminant, contaminant_group) %>%
+    summarise(
+      systems_tested   = n_distinct(PWSID),
+      systems_detected = n_distinct(PWSID[n_detects > 0]),
+      max_result       = suppressWarnings(max(max_ngL, na.rm = TRUE)),
+      systems_above    = sum(mean_exceeds_reference),
+      reference_ngL    = first(reference_ngL),
+      .groups = "drop"
+    ) %>%
+    filter(systems_detected > 0) %>%
+    arrange(desc(systems_detected)) %>%
+    mutate(
+      unit_div  = if_else(contaminant_group == "Lithium", 1000, 1),
+      unit_lab  = if_else(contaminant_group == "Lithium", "µg/L", "ng/L"),
+      `Highest result` = sprintf("%s %s", formatC(max_result / unit_div, format = "g", digits = 3), unit_lab),
+      `Screening level` = if_else(is.na(reference_ngL), "—",
+                                  sprintf("%s %s", formatC(reference_ngL / unit_div, format = "g", digits = 3), unit_lab)),
+      `Systems averaging above level` = if_else(is.na(reference_ngL), "—", as.character(systems_above))
+    ) %>%
+    select(Contaminant,
+           `Systems tested` = systems_tested,
+           `Systems with detection` = systems_detected,
+           `Highest result`, `Screening level`, `Systems averaging above level`)
+
+  if (nrow(ucmr5_contaminant_tbl) > 0) {
+    cat(knitr::kable(ucmr5_contaminant_tbl, format = "pipe",
+                     align = c("l", "r", "r", "r", "r", "r")), sep = "\n")
+    cat("\n\n: UCMR 5 contaminants detected in suburban Cook County community water systems {#tbl-ucmr5}\n\n")
+  }
+}
+```
+
+These results should be read alongside the systems' water sources. Most suburban systems purchase treated Lake Michigan water, so PFAS and lithium detections in purchased-water systems largely reflect their supplier's source water. Detections in groundwater systems reflect local aquifer conditions and nearby sources of contamination.
+
 ### Comparison with the City of Chicago
 
 Counts of SDWA violations are not a meaningful basis for comparing Chicago with suburban Cook County. Chicago records 214 violations, only 2 of them health-based and 4 under the Lead and Copper Rule, but this low count reflects its operation as a single, large system, its high-quality Lake Michigan source, and its dedicated compliance capacity. It does not indicate a lower risk of lead exposure. The Lead and Copper Rule's 90th-percentile compliance test, which Chicago generally meets through long-standing corrosion control treatment, has been criticized for understating lead at the tap.
@@ -839,6 +1005,7 @@ Several features of the underlying data warrant caution when interpreting these 
 - **Implausible modeled boundaries.** Some EPA-modeled boundaries are far smaller than the communities they serve, such as Stone Park (0.016 km² for 4,576 residents), South Stickney Sanitary District (0.2 km² for 30,000 residents), and River Forest (0.66 km² for 11,717 residents). These distort area-based measures such as the violation density shown in the map below.
 - **Wholesale systems.** Wholesale water commissions (Justice–Willow Springs and DuPage Water Commission) report populations that overlap with those of the retail systems they supply.
 - **Jurisdictional assignment.** Water systems are assigned to the CCDPH jurisdiction or an independent health district by the community they serve; systems whose service areas straddle these boundaries are assigned as a whole.
+- **UCMR 5 results.** UCMR 5 covers all systems serving more than 3,300 people but only a sample of smaller systems, and EPA releases results in batches, so some systems lack results. Results are compared with screening levels, not enforceable standards, and some of the 2024 PFAS MCLs are under reconsideration by EPA.
 - **Lead service line inventories.** Inventories are self-reported, system-level counts drawn from different reporting years and formats, and the systems IEPA lists in Cook County (160 suburban systems) do not exactly match the 142 suburban systems with SDWIS data.
 
 ## Interactive Map of Community Water System Violations

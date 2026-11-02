@@ -40,6 +40,9 @@ in that brief's Methodology section:
 3. **Lead service line inventories** — Illinois EPA's annual Service Line
    Material Inventory reports, standardized and joined to the service
    areas (@sec-lsl).
+4. **Unregulated contaminants** — EPA's UCMR 5 monitoring results for 29
+   PFAS and lithium, summarized by system and compared with health-based
+   reference levels (@sec-ucmr5).
 
 The final step (@sec-save) writes a single, lightweight `.RData` file
 containing only the objects the *rendered data brief* actually needs.
@@ -92,6 +95,9 @@ saved to the `data/` folder (see @sec-lsl).
 | `data/tabular/cook_county_lsl_inventory_history.csv` | IEPA service line material inventories for Cook County systems, all reporting years |
 | `data/tabular/cook_county_lsl_inventory_latest.csv` | Each system's most recent IEPA service line inventory |
 | `data/tabular/cook_county_lsl_summary_by_year.csv` | Service line material totals across Cook County systems by reporting year |
+| `data/tabular/cook_county_ucmr5_results.csv` | UCMR 5 results (PFAS and lithium) for Cook County systems |
+| `data/tabular/cook_county_ucmr5_system_contaminant.csv` | UCMR 5 results summarized by system and contaminant, with reference-level flags |
+| `data/tabular/cook_county_ucmr5_system_summary.csv` | One-row-per-system UCMR 5 summary |
 | `data/drinking_water_dataprep.RData` | Essential objects loaded directly by `drinking_water.qmd` |
 
 # Setup {#sec-setup}
@@ -893,6 +899,335 @@ write_csv(lsl_summary_by_year, file.path(out_tabular_dir, "cook_county_lsl_summa
   (`WholesaleConnections`); totals here use `TotalServiceConnections` as
   reported.
 
+# Unregulated Contaminants (UCMR 5) {#sec-ucmr5}
+
+This section mirrors the brief's Methodology subsection *Unregulated
+Contaminant Monitoring (UCMR 5)*. The fifth Unregulated Contaminant
+Monitoring Rule (UCMR 5) requires public water systems to sample for 30
+contaminants that are not yet fully regulated: 29 per- and polyfluoroalkyl
+substances (PFAS) and lithium. Monitoring ran from 2023 to 2025 and
+covered all community water systems serving more than 3,300 people plus a
+representative sample of smaller systems. EPA releases the results in
+batches as they are reported, so this section downloads the most recent
+release each time it is run.
+
+**Source:** U.S. EPA, [Occurrence Data from the Unregulated Contaminant
+Monitoring Rule](https://www.epa.gov/dwucmr/occurrence-data-unregulated-contaminant-monitoring-rule#5).
+
+::: {.callout-important}
+## Verify against the current EPA release
+
+The code below follows the published layout of the UCMR 5 occurrence
+data file (`UCMR5_All.txt`, tab-delimited). It was written without
+access to the live file, so the first run should be checked: the chunk
+that reads the file stops with a list of any expected columns that are
+missing, and the contaminant names used for reference-level comparisons
+should be confirmed against the printed list of contaminants.
+:::
+
+## Locate and download the latest release
+
+EPA publishes each UCMR 5 data release as a ZIP file linked from the
+occurrence data page, and the file's URL changes with each release. The
+helper below reads the page and returns the first linked ZIP whose name
+refers to UCMR 5, preferring the occurrence data file. If the page cannot
+be read, it falls back to the last known URL.
+
+A ZIP saved by hand to `data/` (or the repository-level `data/` folder)
+with "ucmr5" in its name is used instead of downloading, which supports
+restricted networks. Set `ucmr5_refresh <- TRUE` to force a fresh download
+of the latest release.
+
+```{r}
+#| label: ucmr5-locate
+
+ucmr5_page_url        <- "https://www.epa.gov/dwucmr/occurrence-data-unregulated-contaminant-monitoring-rule"
+ucmr5_fallback_zip    <- "https://www.epa.gov/system/files/other-files/2023-08/ucmr5-occurrence-data.zip"
+ucmr5_zip_path        <- file.path(out_tabular_dir, "ucmr5-occurrence-data.zip")
+ucmr5_refresh         <- FALSE
+
+find_ucmr5_zip_url <- function(page_url, fallback) {
+  html <- tryCatch(
+    request(page_url) %>% req_perform() %>% resp_body_string(),
+    error = function(e) {
+      message("Could not read the UCMR page (", conditionMessage(e), "); using fallback URL.")
+      NULL
+    }
+  )
+  if (is.null(html)) return(fallback)
+
+  hrefs <- str_match_all(html, 'href="([^"]+\\.zip)"')[[1]][, 2]
+  hrefs <- hrefs[str_detect(hrefs, regex("ucmr[-_ ]?5", ignore_case = TRUE))]
+  if (length(hrefs) == 0) {
+    message("No UCMR 5 ZIP link found on the page; using fallback URL.")
+    return(fallback)
+  }
+  hrefs <- hrefs[order(!str_detect(hrefs, regex("occurrence", ignore_case = TRUE)))]
+  url <- hrefs[1]
+  if (!str_starts(url, "http")) url <- paste0("https://www.epa.gov", url)
+  url
+}
+
+manual_zips <- c(
+  list.files("data", pattern = "(?i)ucmr[-_ ]?5.*\\.zip$", full.names = TRUE),
+  list.files(file.path("..", "..", "data"), pattern = "(?i)ucmr[-_ ]?5.*\\.zip$", full.names = TRUE)
+)
+
+if (length(manual_zips) > 0 && !ucmr5_refresh) {
+  ucmr5_zip_path <- manual_zips[1]
+  message("Using manually saved UCMR 5 file: ", ucmr5_zip_path)
+} else if (!file.exists(ucmr5_zip_path) || ucmr5_refresh) {
+  ucmr5_zip_url <- find_ucmr5_zip_url(ucmr5_page_url, ucmr5_fallback_zip)
+  message("Downloading UCMR 5 data from ", ucmr5_zip_url)
+  download.file(ucmr5_zip_url, destfile = ucmr5_zip_path, mode = "wb")
+}
+```
+
+## Extract and read the results file
+
+The ZIP contains the main results file (`UCMR5_All.txt`) along with
+supporting files (for example, ZIP codes served and additional data
+elements). The chunk below extracts the results file, matching its name
+case-insensitively, and reads it as tab-delimited text with every column
+as character, so that no values are lost to type guessing. Latin-1
+encoding is used because the units field contains the "µ" symbol. The
+chunk then checks that the columns used later are present.
+
+```{r}
+#| label: ucmr5-read
+
+ucmr5_contents <- unzip(ucmr5_zip_path, list = TRUE)$Name
+ucmr5_all_file <- ucmr5_contents[str_detect(ucmr5_contents, regex("UCMR5_All.*\\.txt$", ignore_case = TRUE))][1]
+
+if (is.na(ucmr5_all_file)) {
+  print(ucmr5_contents)
+  stop("No UCMR5_All results file found in ", ucmr5_zip_path, " (contents printed above).")
+}
+
+unzip(ucmr5_zip_path, files = ucmr5_all_file, exdir = out_tabular_dir, overwrite = TRUE)
+
+ucmr5_raw <- read_tsv(
+  file.path(out_tabular_dir, ucmr5_all_file),
+  col_types = cols(.default = col_character()),
+  locale = locale(encoding = "latin1"),
+  progress = FALSE
+)
+
+ucmr5_required_cols <- c("PWSID", "PWSName", "Size", "FacilityID", "SamplePointID",
+                         "CollectionDate", "Contaminant", "MRL", "Units",
+                         "AnalyticalResultsSign", "AnalyticalResultValue")
+ucmr5_missing_cols <- setdiff(ucmr5_required_cols, names(ucmr5_raw))
+if (length(ucmr5_missing_cols) > 0) {
+  stop("UCMR 5 file is missing expected columns: ", paste(ucmr5_missing_cols, collapse = ", "),
+       ". Columns present: ", paste(names(ucmr5_raw), collapse = ", "))
+}
+
+message(nrow(ucmr5_raw), " UCMR 5 results read for ", n_distinct(ucmr5_raw$PWSID), " systems nationally.")
+```
+
+## Filter to Cook County systems and standardize results
+
+Results are kept for systems identified as serving Cook County in
+@sec-sdwis or whose service areas intersect the county (@sec-boundaries),
+the same rule used for the lead service line inventories.
+
+Each result is then standardized:
+
+- **Concentrations** are converted to nanograms per liter (ng/L), the unit
+  used for PFAS drinking water standards. Results reported in µg/L are
+  multiplied by 1,000.
+- **Detections** are results with an `AnalyticalResultsSign` of "=",
+  meaning the contaminant was measured at or above EPA's minimum reporting
+  level (MRL). Results marked "<" were below the MRL and are treated as
+  non-detects with a concentration of zero when averaging.
+- **Contaminant group** is "Lithium" or "PFAS". Every other UCMR 5
+  contaminant is a PFAS.
+- **Collection dates** are parsed from either `MM/DD/YYYY` or ISO format.
+
+```{r}
+#| label: ucmr5-standardize
+
+ucmr5_cook <- ucmr5_raw %>%
+  filter(PWSID %in% union(cook_pwsids, cook_cws$PWSID)) %>%
+  mutate(
+    result_value    = suppressWarnings(as.numeric(AnalyticalResultValue)),
+    mrl_value       = suppressWarnings(as.numeric(MRL)),
+    to_ngL          = if_else(str_detect(Units, regex("ng", ignore_case = TRUE)), 1, 1000),
+    result_ngL      = result_value * to_ngL,
+    mrl_ngL         = mrl_value * to_ngL,
+    detected        = AnalyticalResultsSign == "=" & !is.na(result_ngL),
+    result_ngL_nd0  = if_else(detected, result_ngL, 0),
+    contaminant_key = str_to_upper(str_replace_all(Contaminant, "[^A-Za-z0-9]", "")),
+    contaminant_group = if_else(contaminant_key == "LITHIUM", "Lithium", "PFAS"),
+    collection_date = coalesce(as.Date(CollectionDate, format = "%m/%d/%Y"),
+                               as.Date(CollectionDate, format = "%Y-%m-%d"))
+  )
+
+message(n_distinct(ucmr5_cook$PWSID), " Cook County systems have UCMR 5 results (",
+        nrow(ucmr5_cook), " results).")
+
+## Confirm the contaminant names match those used in the reference table below.
+print(sort(unique(ucmr5_cook$Contaminant)))
+```
+
+## Health-based reference levels
+
+UCMR 5 contaminants are unregulated at the time of monitoring, so results
+are compared with health-based reference levels rather than enforceable
+standards. Two kinds of comparison are made:
+
+- **PFAS:** EPA's 2024 National Primary Drinking Water Regulation set
+  maximum contaminant levels (MCLs) of 4.0 ng/L for PFOA and PFOS and
+  10 ng/L for PFHxS, PFNA, and HFPO-DA (GenX). It also set a Hazard Index
+  of 1 for mixtures of PFHxS, PFNA, HFPO-DA, and PFBS. Each of these four
+  is divided by its health-based water concentration (10, 10, 10, and
+  2,000 ng/L, respectively) and the ratios are summed. EPA has since
+  announced that it intends to keep the PFOA and PFOS limits, extend the
+  compliance deadline, and reconsider the others. All five are retained
+  here as screening values.
+- **Lithium:** EPA's health reference level (HRL) of 10 µg/L (10,000 ng/L),
+  used in UCMR 5 reporting.
+
+MCL compliance is based on a running annual average, not on single
+samples. The comparisons below therefore use each system's *average*
+concentration (non-detects as zero) to screen against MCLs and calculate
+the Hazard Index, and report the *maximum* single result separately. Any
+values exceeding a reference level are screening flags, not violations.
+Update the table if EPA revises these values.
+
+```{r}
+#| label: ucmr5-reference-levels
+
+ucmr5_reference <- tibble::tribble(
+  ~contaminant_key, ~reference_ngL, ~reference_type,                ~hi_hbwc_ngL,
+  "PFOA",            4.0,           "MCL (2024)",                   NA,
+  "PFOS",            4.0,           "MCL (2024)",                   NA,
+  "PFHXS",          10,             "MCL (2024)",                   10,
+  "PFNA",           10,             "MCL (2024)",                   10,
+  "HFPODA",         10,             "MCL (2024)",                   10,
+  "PFBS",           NA,             "Hazard Index component only",  2000,
+  "LITHIUM",     10000,             "Health reference level",       NA
+)
+
+missing_ref <- setdiff(ucmr5_reference$contaminant_key, unique(ucmr5_cook$contaminant_key))
+if (length(missing_ref) > 0) {
+  message("Reference contaminants not found in the Cook County results (check naming): ",
+          paste(missing_ref, collapse = ", "))
+}
+```
+
+## Summarize by system and contaminant
+
+The next chunk summarizes results for each system and contaminant: the
+number of samples and detections, the average concentration (non-detects
+as zero), and the maximum detected concentration. It then attaches the
+reference level and flags whether the average or maximum exceeds it.
+
+```{r}
+#| label: ucmr5-system-contaminant
+
+ucmr5_cook_system_contaminant <- ucmr5_cook %>%
+  group_by(PWSID, PWSName, Contaminant, contaminant_key, contaminant_group) %>%
+  summarise(
+    n_samples  = n(),
+    n_detects  = sum(detected),
+    mean_ngL   = mean(result_ngL_nd0, na.rm = TRUE),
+    max_ngL    = if (any(detected)) max(result_ngL[detected], na.rm = TRUE) else NA_real_,
+    first_date = if (all(is.na(collection_date))) as.Date(NA) else min(collection_date, na.rm = TRUE),
+    last_date  = if (all(is.na(collection_date))) as.Date(NA) else max(collection_date, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(ucmr5_reference, by = "contaminant_key") %>%
+  mutate(
+    mean_exceeds_reference = !is.na(reference_ngL) & mean_ngL > reference_ngL,
+    max_exceeds_reference  = !is.na(reference_ngL) & !is.na(max_ngL) & max_ngL > reference_ngL
+  )
+```
+
+## Summarize by system and join to service areas
+
+Each system's results are then condensed into one row and joined by
+`PWSID` to `cook_cws_with_violations`, adding the `ucmr5_*` fields:
+
+| Field | Description |
+|---|---|
+| `ucmr5_n_samples` | Total UCMR 5 results reported |
+| `ucmr5_n_pfas_detected` | Number of distinct PFAS detected at or above the MRL |
+| `ucmr5_any_pfas_detected` | Whether any PFAS was detected |
+| `ucmr5_pfoa_mean_ngL`, `ucmr5_pfos_mean_ngL` | Average PFOA and PFOS (ng/L, non-detects as zero) |
+| `ucmr5_pfas_max_ngL` | Highest single PFAS result (ng/L) |
+| `ucmr5_hazard_index` | Hazard Index from average PFHxS, PFNA, HFPO-DA, and PFBS |
+| `ucmr5_pfas_above_mcl` | Whether any PFAS with an MCL averages above it, or the Hazard Index exceeds 1 |
+| `ucmr5_lithium_mean_ugL`, `ucmr5_lithium_max_ugL` | Average and highest lithium (µg/L) |
+| `ucmr5_lithium_above_hrl` | Whether average lithium exceeds the 10 µg/L HRL |
+
+Systems that did not report UCMR 5 results (mainly small systems not
+selected for monitoring) receive `NA`.
+
+```{r}
+#| label: ucmr5-system-summary
+
+key_mean <- function(df, key) {
+  v <- df$mean_ngL[df$contaminant_key == key]
+  if (length(v) == 0) NA_real_ else v[1]
+}
+
+ucmr5_system_summary <- ucmr5_cook_system_contaminant %>%
+  group_by(PWSID) %>%
+  group_modify(~ {
+    pfas <- filter(.x, contaminant_group == "PFAS")
+    li   <- filter(.x, contaminant_group == "Lithium")
+    hi_parts <- filter(.x, !is.na(hi_hbwc_ngL))
+    hazard_index <- if (nrow(hi_parts) > 0) sum(hi_parts$mean_ngL / hi_parts$hi_hbwc_ngL) else NA_real_
+    tibble(
+      ucmr5_n_samples         = sum(.x$n_samples),
+      ucmr5_n_pfas_detected   = sum(pfas$n_detects > 0),
+      ucmr5_any_pfas_detected = any(pfas$n_detects > 0),
+      ucmr5_pfoa_mean_ngL     = key_mean(.x, "PFOA"),
+      ucmr5_pfos_mean_ngL     = key_mean(.x, "PFOS"),
+      ucmr5_pfas_max_ngL      = suppressWarnings(max(pfas$max_ngL, na.rm = TRUE)),
+      ucmr5_hazard_index      = hazard_index,
+      ucmr5_pfas_above_mcl    = any(pfas$mean_exceeds_reference) |
+                                (!is.na(hazard_index) && hazard_index > 1),
+      ucmr5_lithium_mean_ugL  = if (nrow(li) > 0) li$mean_ngL[1] / 1000 else NA_real_,
+      ucmr5_lithium_max_ugL   = if (nrow(li) > 0) li$max_ngL[1] / 1000 else NA_real_,
+      ucmr5_lithium_above_hrl = if (nrow(li) > 0) li$mean_exceeds_reference[1] else NA
+    )
+  }) %>%
+  ungroup() %>%
+  mutate(ucmr5_pfas_max_ngL = if_else(is.finite(ucmr5_pfas_max_ngL), ucmr5_pfas_max_ngL, NA_real_))
+
+cook_cws_with_violations <- cook_cws_with_violations %>%
+  left_join(ucmr5_system_summary, by = "PWSID")
+
+message(sum(!is.na(cook_cws_with_violations$ucmr5_n_samples)), " of ",
+        nrow(cook_cws_with_violations), " service areas matched to UCMR 5 results.")
+```
+
+## Save UCMR 5 outputs
+
+The Cook County results, the system-by-contaminant summary, and the
+system-level summary are written to CSV.
+
+```{r}
+#| label: ucmr5-save
+
+write_csv(ucmr5_cook,                    file.path(out_tabular_dir, "cook_county_ucmr5_results.csv"))
+write_csv(ucmr5_cook_system_contaminant, file.path(out_tabular_dir, "cook_county_ucmr5_system_contaminant.csv"))
+write_csv(ucmr5_system_summary,          file.path(out_tabular_dir, "cook_county_ucmr5_system_summary.csv"))
+```
+
+## Notes
+
+- UCMR 5 results are a snapshot of 2023–2025 monitoring and are released
+  in batches; systems whose results are not yet published appear as `NA`.
+- Systems that buy water from another system (e.g., from Chicago) sample
+  their own entry points, so purchased-water systems can show results that
+  mostly reflect their supplier's source water.
+- Exceeding a reference level in UCMR 5 monitoring is not a violation.
+  UCMR results are not used for compliance, and PFAS MCL compliance
+  monitoring does not begin until later in the decade.
+
 # Save Essential Objects for Rendering {#sec-save}
 
 Only the objects referenced by `drinking_water.qmd`'s evaluated
@@ -902,7 +1237,8 @@ the rendered brief depends only on what it needs:
 | Object | Description |
 |--------|-------------|
 | `cook_county` | `sf` polygon of the Cook County boundary, used as the reference outline on the brief's interactive leaflet map. |
-| `cook_cws_with_violations` | `sf` polygons of community water system service areas joined to the system-level SDWA violation summary and to each system's most recent IEPA lead service line inventory (`lsl_*` fields). This is the sole data source for the interactive map (fill, hover labels, and the derived violation-density measure computed in the brief). |
+| `cook_cws_with_violations` | `sf` polygons of community water system service areas joined to the system-level SDWA violation summary, each system's most recent IEPA lead service line inventory (`lsl_*` fields), and its UCMR 5 summary (`ucmr5_*` fields). This is the main data source for the brief's Analysis section, including the interactive map (fill, hover labels, and the derived violation-density measure computed in the brief). |
+| `ucmr5_cook_system_contaminant` | UCMR 5 results summarized by system and contaminant, used for the brief's contaminant-level UCMR 5 summary table. |
 
 All other intermediate and raw objects (`pws_cook`, `violations_cook`,
 `lcr_cook`, `geo_areas`, `svc_areas`, `ref_codes`, `cook_cws`,
@@ -910,13 +1246,14 @@ All other intermediate and raw objects (`pws_cook`, `violations_cook`,
 and Shapefile outputs written above, but are intentionally excluded from
 the `.RData` file the brief loads at render time.
 
-The final chunk saves the two essential objects with `xz` compression.
+The final chunk saves these objects with `xz` compression.
 
 ```{r}
 #| label: save-rdata
 
-save(cook_county, cook_cws_with_violations, file = out_rdata_path, compress = "xz")
+save(cook_county, cook_cws_with_violations, ucmr5_cook_system_contaminant,
+     file = out_rdata_path, compress = "xz")
 
-message("Saved essential rendering data (cook_county, cook_cws_with_violations) to ",
-        out_rdata_path)
+message("Saved essential rendering data (cook_county, cook_cws_with_violations, ",
+        "ucmr5_cook_system_contaminant) to ", out_rdata_path)
 ```
