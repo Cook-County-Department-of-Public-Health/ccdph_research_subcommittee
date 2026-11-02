@@ -786,6 +786,85 @@ write.csv(summary_by_municipality,
 
 # Analysis
 
+## Summary of Community Water System Service Areas and Violations
+
+<!-- NOTE: The figures in this section were tallied from the
+cook_cws_with_violations data frame as produced by
+drinking_water_dataprep.qmd from the May 2026 SDWA quarterly snapshot.
+They are static text, not computed at render time, and should be
+re-checked whenever the underlying data are refreshed. -->
+
+The joined data set (`cook_cws_with_violations`) contains 166 community water system service areas that intersect Cook County. Of these, 143 systems are identified in SDWIS as serving Cook County and therefore carry violation and compliance data; the remaining 23 are systems in neighboring counties (including three in Indiana) whose boundaries touch the county but which do not list Cook County as a county served. The summaries below describe (1) the area and types of service areas, (2) the population and service connections of these systems, and (3) the overall magnitude of drinking water violations across Cook County as a whole and across suburban Cook County (excluding the City of Chicago). All figures are approximate.
+
+### Service Area Extent and Types
+
+Municipal water systems dominate the landscape, accounting for 131 of the 166 service areas and the large majority of the land area served. The remaining systems are a mix of residential areas served by private utilities (e.g., Aqua Illinois and Illinois American Water), sanitary improvement districts, mobile home parks, wholesale water commissions, homeowners associations, and medical facilities (@tbl-cws-types).
+
+| Service area type | Systems | Approx. area (km²) |
+|---|---:|---:|
+| Municipality | 131 | ~2,300 (Chicago: 598) |
+| Residential Area / Other Residential | 15 | ~157 |
+| Sanitary Improvement District | 6 | ~24 |
+| Mobile Home Park | 8 | ~2.4 |
+| Wholesaler of Water | 2 | ~7 |
+| Homeowners Association | 2 | ~1.5 |
+| Medical Facility | 2 | ~0.4 |
+| **Total** | **166** | **~2,490** |
+
+: Community water system service areas intersecting Cook County, by service area type {#tbl-cws-types}
+
+The 143 systems with SDWIS data cover roughly 1,955 km², of which the Chicago Department of Water Management's service area accounts for 598 km² (about 31%) and suburban systems roughly 1,357 km². Boundary provenance is mixed: about 58% of boundaries (97) are EPA-modeled estimates, predominantly from a random forest model, while about 42% (69) are system-sourced, nearly all of them derived by tracing or buffering municipal lead service line inventories. Only one boundary (Hazel Crest) carries a confirmation date. Nearly all systems are owned by local governments; 19 are privately owned (mobile home parks, homeowners associations, and investor-owned utility systems) and one is federal (Edward Hines Jr. VA Hospital).
+
+### Population and Service Connections
+
+Together, the 143 Cook County systems serve approximately 5.25 million people through about 1.25 million service connections (@tbl-cws-population). Chicago alone serves about 2.75 million people (52%), while the 142 suburban systems collectively serve roughly 2.5 million people through about 766,000 connections.
+
+| Geography | Systems | Population served | Service connections |
+|---|---:|---:|---:|
+| Cook County (systems with SDWIS data) | 143 | ~5.25 million | ~1.25 million |
+| City of Chicago | 1 | ~2.75 million (52%) | ~485,000 (39%) |
+| Suburban Cook County | 142 | ~2.50 million | ~766,000 |
+
+: Population served and service connections of community water systems in Cook County {#tbl-cws-population}
+
+Most systems are mid-sized. Across all 166 service areas, 2 serve more than 100,000 people (Chicago and Elgin), 95 serve 10,001–100,000, 31 serve 3,301–10,000, 25 serve 501–3,300, and 13 serve 500 or fewer. The largest suburban systems include Cicero (83,000), Schaumburg (75,750), Evanston (75,570), Arlington Heights (73,320), Palatine (70,875), and Skokie (66,422). Chicago averages about 5.7 residents per service connection, compared with about 3.3 in the suburbs, which is consistent with Chicago's greater share of multi-unit housing. Population and connection counts reported in the boundary layer occasionally diverge from those in SDWIS. For example, Chicago lists 485,000 connections in the boundary layer and 527,000 in SDWIS, and Evanston lists 28,783 and 14,657 respectively.
+
+### Magnitude of Drinking Water Violations
+
+Across the 143 Cook County systems, SDWIS records approximately 8,450 violations, of which about 1,540 (18%) are health-based, about 219 are unresolved, and about 809 (10%) are Lead and Copper Rule violations (@tbl-cws-violations). Every system but one (Aqua Illinois–Timber Ridge) has at least one recorded violation.
+
+| Geography | Violations | Health-based | Unresolved | Lead and Copper Rule |
+|---|---:|---:|---:|---:|
+| Cook County | ~8,450 | ~1,540 | ~219 | ~809 |
+| City of Chicago | 214 | 2 | 0 | 4 |
+| Suburban Cook County | ~8,230 (97%) | ~1,540 (~100%) | ~219 (100%) | ~805 (99.5%) |
+
+: SDWA violations among community water systems serving Cook County {#tbl-cws-violations}
+
+The violation burden is overwhelmingly suburban. Although Chicago serves just over half of the county's population, it accounts for less than 3% of recorded violations and almost none of the health-based, unresolved, or Lead and Copper Rule violations. Expressed per 1,000 residents served, suburban systems have about 3.3 violations compared with about 0.08 for Chicago, a roughly 40-fold difference.
+
+Within suburban Cook County, violations are concentrated in a relatively small number of systems:
+
+- **Highest total violation counts** are found predominantly in the south suburbs: Sauk Village (689), Ford Heights (580), Bartlett (300), Robbins (271), Phoenix (248), Richton Park (218), Dixmoor (172), Park Forest (161), Lemont (153), and Markham (150).
+- **Small systems have the highest per-capita burdens.** Measured per 1,000 residents served, rates reach about 365 for Des Plaines Mobile Home Park, 320 for Ford Heights, 250 for Illinois American–Midwest Palos, 230 for Candlelight Village Mobile Home Park, 228 for Glen Eden Estates Homeowners Association, and 221 for Golf.
+- **Groundwater systems are disproportionately affected.** The 16 systems relying on groundwater serve only about 95,000 people (about 4% of the suburban population) but account for roughly 2,000 violations (about 24% of the suburban total). Most other systems purchase treated Lake Michigan surface water.
+- **Health-based violations are highly concentrated.** Bartlett alone accounts for 257 health-based violations, followed by Lemont (90) and Blackhawk Estates Mobile Home Park (89).
+- **Lead and Copper Rule violations cluster in older inner-ring and south suburban communities**, led by Phoenix (40), Dixmoor (38), Maywood (27), South Holland (27), Ford Heights (21), and Berwyn (19).
+- **Unresolved violations** are most numerous in Robbins (15), Summit (10), Dixmoor (9), Calumet Park (9), and Burnham (8).
+
+Taken together, these patterns indicate that drinking water compliance problems in Cook County are concentrated among small, groundwater-dependent, and lower-income south suburban systems, rather than distributed in proportion to population. This finding aligns with the environmental justice concerns described in the [Literature Review].
+
+### Data Limitations
+
+Several features of the underlying data warrant caution when interpreting these figures:
+
+- **Most recent violation date.** The `most_recent_violation` field is derived from SDWIS's `VIOL_LAST_REPORTED_DATE`, which records when a violation was last *reported*, not when it occurred. Most systems share the same date (2026-05-27 for 107 systems and 2006-12-06 for 15), dates that appear to reflect EPA data refresh and migration events. The field should not be interpreted as the date of the most recent violation.
+- **Possible double counting.** Violation counts are drawn from SDWIS's combined violations and enforcement file, which may contain one record per violation–enforcement action pair. If so, violations with multiple enforcement actions are counted more than once.
+- **Unmatched systems.** Twenty-three systems whose service areas intersect Cook County (e.g., Elgin, Elmhurst, Barrington, Roselle, Hinsdale, Frankfort, and Illinois American–West Suburban) lack SDWIS data because Cook County is not listed among the counties they serve, even though some do serve Cook County residents.
+- **Unclipped boundaries.** Service areas are retained in full rather than clipped to the county line, so area and population totals for systems that cross county boundaries include territory and residents outside Cook County.
+- **Implausible modeled boundaries.** Some EPA-modeled boundaries are far smaller than the communities they serve, such as Stone Park (0.016 km² for 4,576 residents), South Stickney Sanitary District (0.2 km² for 30,000 residents), and River Forest (0.66 km² for 11,717 residents). These distort area-based measures such as the violation density shown in the map below.
+- **Wholesale systems.** Wholesale water commissions (Justice–Willow Springs and DuPage Water Commission) report populations that overlap with those of the retail systems they supply.
+
 ## Interactive Map of Community Water System Violations
 
 To support exploration of how SDWA violation burden is distributed across suburban Cook County's community water system service areas, the compliance summary and service area boundaries joined above as `cook_cws_with_violations` (see [Drinking Water Violation and Compliance]) are rendered here as an interactive `leaflet` map. Service areas are shaded using quintile-based bins of total violation count (`n_violations`), so that shading reflects the empirical distribution of violations across systems rather than a fixed, potentially uninformative interval scheme. The Cook County boundary (`cook_county`) is layered on top as a reference outline. Hovering over a service area surfaces the system's identifying information (name, PWSID, service area type), scale (population served, service connections), and compliance history (total, health-based, unresolved, and Lead and Copper Rule violation counts, plus the most recent violation date). A violation density measure (violations per square mile, calculated from the boundary layer's `Area_SqKM` field) is also included in the hover panel to help distinguish systems with a genuinely concentrated violation burden from large-area systems that may simply accumulate more violations by virtue of serving more territory.
