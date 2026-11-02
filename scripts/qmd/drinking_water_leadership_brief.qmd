@@ -1,0 +1,92 @@
+---
+title: "Drinking Water and Environmental Justice in Suburban Cook County"
+subtitle: "Proposed research project: scope, methods, and initial findings"
+author: "CCDPH Research Subcommittee"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+format:
+  docx:
+    reference-doc: leadership_brief_reference.docx
+    toc: false
+    number-sections: false
+    highlight-style: none
+execute:
+  echo: false
+---
+
+<!-- Two-page summary for CCDPH leadership. Figures are static text drawn
+from the analysis in drinking_water.qmd (May 2026 SDWA snapshot and IEPA
+Service Line Material Inventory Reports, most recent report per system)
+and should be updated if those data are refreshed. The compact page
+layout (11 pt Calibri, 0.75-inch margins) comes from
+leadership_brief_reference.docx, which keeps the document to two pages.
+Render with: quarto render drinking_water_leadership_brief.qmd -->
+
+**Draft for internal discussion**
+
+## Purpose
+
+This project will assess the safety and equity of drinking water in suburban Cook County. It asks three questions:
+
+1. Which community water systems serve residents in CCDPH's jurisdiction, and how are they organized?
+2. Where are drinking water violations and lead service lines concentrated?
+3. Do these burdens fall disproportionately on lower-income communities and communities of color?
+
+The findings are intended to help CCDPH prioritize outreach, technical assistance, and lead exposure prevention, and to support suburban communities' applications for state and federal lead service line replacement funding.
+
+## Scope
+
+The study covers community water systems serving the CCDPH jurisdiction: 136 systems serving about **2.27 million residents** through about **695,000 service connections**. The City of Chicago is excluded from the main analysis because it lies outside CCDPH's jurisdiction and operates as a single large utility that is not comparable to suburban systems. It is retained as context because it supplies treated Lake Michigan water to most suburban communities. Six systems serving Evanston, Oak Park, Skokie, and Stickney Township, which have their own health departments, are reported separately.
+
+## Methods
+
+The analysis links three public data sources using each system's federal water system ID (PWSID):
+
+- **Service area boundaries.** The U.S. EPA Public Water System Service Area Boundaries dataset (Version 3, 2026) maps the area each system serves.
+- **Violations and compliance.** EPA's Safe Drinking Water Information System (SDWIS), retrieved through ECHO, provides each system's violation history, including health-based, unresolved, and Lead and Copper Rule violations.
+- **Lead service lines.** Illinois EPA's annual Service Line Material Inventory Reports provide each system's count of lead, galvanized, unknown, and non-lead service lines.
+
+The data are combined into a reproducible pipeline and an interactive map that can be refreshed as EPA and IEPA release updates.
+
+## Initial Findings
+
+**Water service is highly fragmented.** Suburban Cook County is served by more than 140 separate systems, ranging from mobile home parks with a few dozen connections to cities of more than 80,000 residents. Each system is responsible for its own monitoring, reporting, and compliance, so capacity varies widely.
+
+**Violations are concentrated in a small number of systems.** CCDPH-area systems have about 7,900 recorded violations, about 1,500 of them health-based (@tbl-findings).
+
+| Measure (CCDPH jurisdiction) | Value |
+|---|---:|
+| Community water systems | 136 |
+| Residents served | ~2.27 million |
+| Total violations | ~7,900 |
+| Health-based violations | ~1,500 |
+| Unresolved violations | ~210 |
+| Lead and Copper Rule violations | ~770 |
+| Known lead service lines | ~107,600 (16%) |
+| Lines that may require replacement (lead, galvanized, or unknown) | ~35% |
+
+: Summary of initial findings {#tbl-findings}
+
+- **South suburban communities carry the heaviest burden.** Sauk Village, Ford Heights, Robbins, Phoenix, Richton Park, Dixmoor, Park Forest, and Markham are among the systems with the most violations.
+- **Small systems have the highest rates per resident.** Some mobile home parks, homeowners associations, and small villages record more than 200 violations per 1,000 residents served.
+- **Groundwater systems are disproportionately affected.** The 16 systems that rely on wells serve about 4% of residents but account for about a quarter of all violations.
+
+**Lead service lines remain widespread.** About 107,600 service lines (16%) are known to be lead, and about 35% are lead, galvanized, or of unknown material and may need replacement. Lead lines are reported by about half of systems but are concentrated in a few communities: Cicero, Des Plaines, Evergreen Park, Maywood, and Calumet City together account for nearly 40% of known lead lines.
+
+**Chicago comparison.** Chicago records far fewer violations than suburban systems, largely because it is a single, well-resourced utility. Its lead service line burden is, however, considerably higher: about 83% of its lines are lead or of unknown material, compared with about 35% in the CCDPH jurisdiction.
+
+## Limitations
+
+These findings are preliminary. Violation counts may include duplicate records, and the available violation dates reflect when violations were reported rather than when they occurred. Some EPA-modeled service area boundaries are inaccurate. Lead service line counts are self-reported and come from different reporting years. Twenty-three systems that cross into neighboring counties lack violation data in the current extract.
+
+## Proposed Next Steps
+
+1. **Refine the violation measures** by removing duplicate records, restricting to a recent time window (e.g., the past five years), and separating health-based violations from monitoring and reporting violations.
+2. **Add community characteristics**, such as income, race and ethnicity, and CCDPH social vulnerability measures, to test whether burdens fall disproportionately on environmental justice communities.
+3. **Validate findings with partners**, including IEPA and selected high-burden water systems, before external release.
+4. **Produce public-facing products**, including the full data brief and interactive map.
+
+## Requested of Leadership
+
+- Approval of the project scope, including treatment of the independent health districts.
+- Support for data-sharing discussions with IEPA and outreach to selected water systems.
+- Guidance on priority audiences and the timeline for release of findings.
