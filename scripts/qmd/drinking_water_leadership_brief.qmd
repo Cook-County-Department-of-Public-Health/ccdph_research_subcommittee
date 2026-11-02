@@ -13,14 +13,6 @@ execute:
   echo: false
 ---
 
-<!-- Two-page summary for CCDPH leadership. Figures are static text drawn
-from the analysis in drinking_water.qmd (May 2026 SDWA snapshot and IEPA
-Service Line Material Inventory Reports, most recent report per system)
-and should be updated if those data are refreshed. The compact page
-layout (11 pt Calibri, 0.75-inch margins) comes from
-leadership_brief_reference.docx, which keeps the document to two pages.
-Render with: quarto render drinking_water_leadership_brief.qmd -->
-
 ## Purpose
 
 This project will assess the safety and equity of drinking water in suburban Cook County. It asks three questions:
@@ -43,7 +35,7 @@ The study covers community water systems serving the CCDPH jurisdiction: 136 sys
 - **Violations and compliance:** EPA's Safe Drinking Water Information System (SDWIS), retrieved quarterly through ECHO, which records each system's violations, enforcement actions, ownership, population served, and water source.
 - **Lead service lines:** Illinois EPA's annual Service Line Material Inventory Reports (2017–2024), which give each system's count of lead, galvanized, unknown, and non-lead service lines.
 
-**Data integration.** Service area boundaries are retrieved for the Cook County area and repaired where geometries are invalid. Cook County systems are identified in SDWIS by the county they report serving, and cross-checked against the boundaries to capture systems that cross county lines. Violation and contaminant codes are decoded into descriptive categories. Lead service line materials are grouped into lead, galvanized, unknown, and non-lead lines, and each system's most recent inventory is used. All steps run in a documented, reproducible R pipeline that can be refreshed as EPA and IEPA release new data.
+**Data integration.** Service area boundaries are retrieved for the Cook County area. Cook County systems are identified in SDWIS by the county they report serving, and cross-checked against the boundaries to capture systems that cross county lines. Violation and contaminant codes are decoded into descriptive categories. Lead service line materials are grouped into lead, galvanized, unknown, and non-lead lines, and each system's most recent inventory is used. All steps run in a documented, reproducible R pipeline that can be refreshed as EPA and IEPA release new data.
 
 **Measures.** For each system, the study calculates total, health-based, unresolved, and Lead and Copper Rule violations; violations per 1,000 residents served and per square mile; and the number and share of service lines that are lead or may require replacement (lead, galvanized, or unknown).
 
