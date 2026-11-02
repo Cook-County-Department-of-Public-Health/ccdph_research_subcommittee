@@ -1,0 +1,808 @@
+---
+title: "Drinking Water Data Preparation"
+subtitle: "<i>Data-processing pipeline for the Drinking Water and Environmental Justice data brief</i>"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+
+format:
+  html:
+    theme: [journal, "databrief.scss"]
+    code-fold: false
+    code-tools: false
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    title-block-banner: true
+    embed-resources: true
+execute:
+  echo: true
+  eval: true
+  warning: false
+  message: true
+editor_options:
+  chunk_output_type: console
+---
+
+# Overview {#sec-overview}
+
+## Purpose
+
+This document is the consolidated data-processing pipeline for the
+*Drinking Water and Environmental Justice* data brief (`drinking_water.qmd`).
+It runs, end to end, every data-acquisition and processing step documented
+in that brief's Methodology section:
+
+1. **Service area boundaries** — EPA community water system service area
+   polygons for Cook County (@sec-boundaries).
+2. **Violation and compliance data** — EPA SDWIS/ECHO Safe Drinking Water
+   Act records, summarized by water system and joined to the boundaries
+   (@sec-sdwis).
+3. **Lead service line inventories** — municipal lead service line (LSL)
+   inventories, aggregated where public endpoints have been identified
+   (@sec-lsl).
+
+The final step (@sec-save) writes a single, lightweight `.RData` file
+containing only the objects the *rendered data brief* actually needs.
+
+## Rationale
+
+`drinking_water.qmd` sets `eval: false` globally and shows its Methodology
+chunks for documentation purposes only. Those chunks are not meant to be
+re-run — and re-download more than 400 MB of EPA data — every time the
+brief is rendered. Instead, this pipeline is run separately on a refresh
+cadence, and the brief's single evaluated setup chunk (*load prepared
+analysis data*) simply `load()`s this pipeline's output to make
+`cook_county` and `cook_cws_with_violations` available to the Analysis
+section's interactive leaflet map.
+
+## Usage
+
+Render (or run) this document with the working directory set to its own
+folder (`scripts/qmd/`), which matches the relative `data/` paths used
+throughout `drinking_water.qmd`. Quarto does this automatically when
+rendering:
+
+```bash
+quarto render drinking_water_dataprep.qmd
+```
+
+To run the code without producing an HTML report, extract it to a plain R
+script and source it from an R session started in `scripts/qmd/`:
+
+```r
+knitr::purl("drinking_water_dataprep.qmd")
+source("drinking_water_dataprep.R")
+```
+
+## Outputs
+
+All outputs are written under `scripts/qmd/data/`, and the folders are
+created if missing.
+
+| File | Description |
+|------|-------------|
+| `data/spatial/cook_county_water_system_boundaries.{gpkg,shp}` | Cook County community water system service areas |
+| `data/spatial/cook_county_water_systems_with_violations.shp` | Service areas joined to system-level violation summaries |
+| `data/spatial/cook_county_lead_service_lines_combined.gpkg` | Combined municipal LSL inventories (only if any endpoints are resolved; see @sec-lsl) |
+| `data/tabular/cook_county_pws_inventory.csv` | Cook County public water system inventory |
+| `data/tabular/cook_county_sdwa_violations.csv` | Decoded SDWA violations for Cook County systems |
+| `data/tabular/cook_county_lead_copper_samples.csv` | Lead and Copper Rule sample results |
+| `data/tabular/cook_county_pws_violation_summary.csv` | Violation counts summarized by water system |
+| `data/tabular/cook_county_lsl_summary_by_municipality.csv` | LSL status counts by municipality (only if any endpoints are resolved) |
+| `data/drinking_water_dataprep.RData` | Essential objects loaded directly by `drinking_water.qmd` |
+
+# Setup {#sec-setup}
+
+## Load packages
+
+The following chunk attaches the packages used throughout the pipeline,
+with a short note on what each one is used for.
+
+```{r}
+#| label: load-packages
+
+library(dplyr)      # data wrangling
+library(tidyr)      # replace_na
+library(stringr)    # str_starts, str_to_upper
+library(readr)      # read_csv, write_csv
+library(sf)         # spatial operations
+library(httr2)      # ArcGIS REST Feature Service queries (see fetch_arcgis_features())
+library(geojsonsf)  # parse ArcGIS REST GeoJSON responses into sf
+library(purrr)      # pmap, compact, map
+library(tigris)     # counties()
+library(ggplot2)    # quick visual QA plot
+```
+
+::: {.callout-note}
+## Why not `arcgislayers`?
+
+This pipeline deliberately does **not** use the `arcgislayers` package.
+`arcgislayers` requires `rlang >= 1.3.0`, and on systems where
+administrative policy pins `rlang` to an older version (e.g. 1.1.7),
+calling any `arcgislayers` function (even `arc_open()`) fails with
+*"namespace 'rlang' ... is already loaded, but >= 1.3.0 is required"*.
+`rlang` cannot be reloaded at a different version mid-session once another
+attached package (`dplyr`, `tidyr`, etc.) has already loaded it. All ArcGIS
+REST Feature Service access below instead goes through
+`fetch_arcgis_features()` (`httr2` + `geojsonsf`; see @sec-arcgis-helpers),
+which has no `rlang` version requirement beyond what `dplyr`/`tidyr`
+already need.
+:::
+
+## Configure spatial engine and output paths
+
+EPA's Public Water System Service Area Boundaries dataset includes some
+invalid polygons (self-intersections, duplicate vertices), especially among
+EPA-modeled boundaries. `sf`'s default spherical geometry engine (`s2`) is
+strict about validity and will error on these, so the next chunk falls back
+to the more forgiving GEOS planar engine for the duration of the pipeline.
+Geometries are still explicitly repaired with `st_make_valid()` as a second
+safeguard. The chunk also defines the output locations and creates the
+output folders if they do not already exist.
+
+```{r}
+#| label: configure-environment
+
+sf::sf_use_s2(FALSE)
+
+out_spatial_dir <- "data/spatial"
+out_tabular_dir <- "data/tabular"
+out_rdata_path  <- "data/drinking_water_dataprep.RData"
+
+dir.create(out_spatial_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(out_tabular_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+# Public Water System Service Area Boundaries {#sec-boundaries}
+
+This section mirrors the brief's Methodology subsection *Public Water
+System Service Area Boundaries*. It retrieves community water system
+service area polygons from EPA's hosted ArcGIS Feature Service and clips
+them to Cook County.
+
+**Source:** EPA Office of Water, [Public Water System Service Area
+Boundaries v3](https://www.epa.gov/ground-water-and-drinking-water/public-water-system-service-areas).
+
+The chunk below stores the Feature Service URL used throughout this
+section.
+
+```{r}
+#| label: boundaries-feature-server-url
+
+feature_server_url <- "https://services.arcgis.com/cJ9YHowT8TU7DUyn/arcgis/rest/services/Water_System_Boundaries/FeatureServer"
+```
+
+## Cook County boundary
+
+The national boundaries dataset contains more than 44,000 systems. To avoid
+downloading all of them, the Cook County polygon is retrieved from the
+Census Bureau's cartographic boundary files (via `tigris`) and used as a
+spatial filter. It is projected to WGS 84 (EPSG:4326) to match the Feature
+Service.
+
+```{r}
+#| label: cook-county-boundary
+
+cook_county <- counties(state = "IL", cb = TRUE, year = 2023) %>%
+  filter(NAME == "Cook") %>%
+  st_transform(4326)
+```
+
+## ArcGIS REST Feature Service helpers {#sec-arcgis-helpers}
+
+These two helper functions cover everything `arcgislayers` would otherwise
+provide for this pipeline: inspecting a FeatureServer's layer list, and
+paginated feature retrieval with an optional bounding-box spatial filter.
+
+### Listing available layers
+
+`print_arcgis_layers()` is a lightweight replacement for `arc_open()` +
+`print()`. It fetches and prints the FeatureServer's layer listing so the
+correct layer index can be confirmed (a service may expose more than one
+layer, e.g. active vs. historical).
+
+```{r}
+#| label: fn-print-arcgis-layers
+
+print_arcgis_layers <- function(base_url) {
+  service_info <- request(base_url) %>%
+    req_url_query(f = "json") %>%
+    req_perform() %>%
+    resp_body_json()
+
+  layers <- service_info$layers
+  if (length(layers) == 0) {
+    message("No layers reported for ", base_url)
+    return(invisible(NULL))
+  }
+
+  message("Layers available on ", base_url, ":")
+  for (lyr in layers) {
+    message(sprintf("  [%s] %s", lyr$id, lyr$name))
+  }
+  invisible(service_info)
+}
+```
+
+### Paginated feature retrieval
+
+`fetch_arcgis_features()` replaces `arc_select()`. It queries an ArcGIS
+REST Feature Service layer and returns the result as an `sf` object. Esri
+REST services usually cap each response at roughly 1,000–2,000 records
+(`maxRecordCount`), so the function pages through results with
+`resultOffset` until a short or empty page signals the last one. When
+`geometry_sf` is supplied, its bounding box is sent as a cheap server-side
+prefilter (mirroring `arc_select(filter_geom = ...)`); callers refine the
+result afterward with an exact `st_filter()`.
+
+```{r}
+#| label: fn-fetch-arcgis-features
+
+fetch_arcgis_features <- function(base_url, layer_id = 0, where = "1=1",
+                                   out_fields = "*", geometry_sf = NULL,
+                                   batch_size = 1000) {
+  query_url <- paste0(base_url, "/", layer_id, "/query")
+
+  # Bounding-box prefilter (server-side), refined with st_filter() afterward.
+  geom_param <- NULL
+  if (!is.null(geometry_sf)) {
+    bb <- st_bbox(st_transform(geometry_sf, 4326))
+    geom_param <- sprintf(
+      '{"xmin":%f,"ymin":%f,"xmax":%f,"ymax":%f,"spatialReference":{"wkid":4326}}',
+      bb["xmin"], bb["ymin"], bb["xmax"], bb["ymax"]
+    )
+  }
+
+  all_features <- list()
+  offset <- 0
+  repeat {
+    req <- request(query_url) %>%
+      req_url_query(
+        where = where,
+        outFields = out_fields,
+        f = "geojson",
+        resultOffset = offset,
+        resultRecordCount = batch_size,
+        geometry = geom_param,
+        geometryType = if (!is.null(geom_param)) "esriGeometryEnvelope" else NULL,
+        inSR = if (!is.null(geom_param)) 4326 else NULL,
+        spatialRel = if (!is.null(geom_param)) "esriSpatialRelIntersects" else NULL
+      )
+
+    resp <- req_perform(req)
+    txt <- resp_body_string(resp)
+
+    batch_sf <- geojson_sf(txt)
+    if (nrow(batch_sf) == 0) break
+
+    all_features[[length(all_features) + 1]] <- batch_sf
+    if (nrow(batch_sf) < batch_size) break
+    offset <- offset + batch_size
+  }
+
+  if (length(all_features) == 0) {
+    return(all_features)  # empty list -- caller decides how to handle
+  }
+
+  dplyr::bind_rows(all_features) %>%
+    st_as_sf() %>%
+    st_make_valid()
+}
+```
+
+## Retrieve Cook County community water system boundaries
+
+First, the FeatureServer's layers are listed to confirm that layer `0` is
+the main community water system boundaries layer.
+
+```{r}
+#| label: list-boundary-layers
+
+print_arcgis_layers(feature_server_url)
+```
+
+Next, only features whose bounding box intersects the Cook County boundary
+are pulled from layer `0`. The pipeline stops with an informative error if
+nothing is returned, since every later step depends on these boundaries.
+
+```{r}
+#| label: fetch-boundaries
+
+cook_cws_raw <- fetch_arcgis_features(
+  base_url    = feature_server_url,
+  layer_id    = 0,
+  geometry_sf = cook_county
+)
+
+if (length(cook_cws_raw) == 0 || nrow(cook_cws_raw) == 0) {
+  stop("No community water system boundary features were returned for the ",
+       "Cook County bounding box -- check feature_server_url and the ",
+       "FeatureServer's availability before continuing.")
+}
+```
+
+Finally, invalid geometries are repaired, any features that remain invalid
+are dropped (with a message reporting how many), and the result is clipped
+precisely to the Cook County polygon.
+
+```{r}
+#| label: clean-clip-boundaries
+
+cook_cws_valid <- cook_cws_raw %>%
+  st_make_valid()
+
+n_invalid <- sum(!st_is_valid(cook_cws_valid))
+if (n_invalid > 0) {
+  message(n_invalid, " feature(s) remain invalid after st_make_valid(); ",
+          "these will be dropped before clipping.")
+  cook_cws_valid <- cook_cws_valid[st_is_valid(cook_cws_valid), ]
+}
+
+cook_cws <- cook_cws_valid %>%
+  st_filter(cook_county, .predicate = st_intersects)  # precise clip to county polygon
+```
+
+## Save and quality check
+
+The next chunk prints a compact summary of the boundary attributes and
+writes the boundaries to both GeoPackage and Shapefile formats.
+
+```{r}
+#| label: save-boundaries
+
+glimpse(st_drop_geometry(cook_cws))
+
+st_write(cook_cws, file.path(out_spatial_dir, "cook_county_water_system_boundaries.gpkg"),
+          delete_dsn = TRUE)
+st_write(cook_cws, file.path(out_spatial_dir, "cook_county_water_system_boundaries.shp"),
+          delete_dsn = TRUE)
+```
+
+As a quick visual check, the service areas are mapped within the Cook
+County outline, with each system shaded a different color.
+
+```{r}
+#| label: fig-boundaries-qa
+#| fig-cap: "Community water system service areas, Cook County, IL"
+
+print(
+  ggplot() +
+    geom_sf(data = cook_county, fill = NA, color = "black", linewidth = 0.6) +
+    geom_sf(data = cook_cws, aes(fill = PWS_Name), color = "white", linewidth = 0.1,
+            show.legend = FALSE, alpha = 0.85) +
+    theme_minimal() +
+    labs(
+      title = "Community Water System Service Areas, Cook County, IL",
+      caption = "Source: U.S. EPA Public Water System Service Area Boundaries (v3)"
+    )
+)
+```
+
+## Notes
+
+- This layer covers **community** water systems only. Non-community systems
+  (schools, gas stations, small transient supplies) are published in a
+  separate FeatureServer.
+- The boundary data mixes EPA-modeled boundaries with authoritative
+  state/utility-sourced boundaries. Check the `SOURCE`/`DATA_SRC` field to
+  distinguish modeled estimates from verified boundaries.
+
+# Drinking Water Violation and Compliance (SDWIS/ECHO) {#sec-sdwis}
+
+This section mirrors the brief's Methodology subsection *Drinking Water
+Violation and Compliance*. It downloads EPA's bulk Safe Drinking Water Act
+(SDWA) dataset, narrows it to Cook County water systems, decodes key
+fields, summarizes violations by system, and joins that summary to the
+service area boundaries from @sec-boundaries.
+
+**Sources:** EPA ECHO – SDWA Data Downloads
+([summary and data dictionary](https://echo.epa.gov/tools/data-downloads/sdwa-download-summary);
+[bulk download index](https://echo.epa.gov/files/echodownloads/)).
+
+The chunk below defines the download URL and the local path for the ZIP
+archive.
+
+```{r}
+#| label: sdwa-paths
+
+zip_url  <- "https://echo.epa.gov/files/echodownloads/SDWA_latest_downloads.zip"
+zip_path <- file.path(out_tabular_dir, "SDWA_latest_downloads.zip")
+```
+
+## Download the bulk SDWA dataset
+
+The bulk dataset is a single large ZIP of CSVs (400+ MB) covering every
+public water system nationally, refreshed by EPA quarterly. It is only
+downloaded if a local copy is not already present; delete the ZIP to force
+a refresh.
+
+```{r}
+#| label: download-sdwa
+
+if (!file.exists(zip_path)) {
+  download.file(zip_url, destfile = zip_path, mode = "wb")
+}
+```
+
+## Extract required files
+
+Only the six tables used by this pipeline are extracted. File names are
+matched case-insensitively in case EPA changes casing between quarterly
+releases, and any expected files that are missing are reported along with
+the archive's full contents to help diagnose naming changes.
+
+```{r}
+#| label: extract-sdwa
+
+needed_files <- c(
+  "SDWA_PUB_WATER_SYSTEMS.csv",
+  "SDWA_VIOLATIONS_ENFORCEMENT.csv",
+  "SDWA_GEOGRAPHIC_AREAS.csv",
+  "SDWA_SERVICE_AREAS.csv",
+  "SDWA_REF_CODE_VALUES.csv",
+  "SDWA_LCR_SAMPLES.csv"          # Lead & Copper Rule sample data
+)
+
+zip_contents <- unzip(zip_path, list = TRUE)$Name
+
+files_to_extract <- zip_contents[
+  toupper(zip_contents) %in% toupper(needed_files)
+]
+
+missing <- setdiff(toupper(needed_files), toupper(files_to_extract))
+if (length(missing) > 0) {
+  message("Note: the following expected files were not found in this quarter's ZIP: ",
+          paste(missing, collapse = ", "),
+          "\nCheck zip_contents (printed below) for the current file list/naming.")
+  print(zip_contents)
+}
+
+unzip(zip_path, files = files_to_extract, exdir = out_tabular_dir, overwrite = TRUE)
+```
+
+## Read and filter to Illinois
+
+The first two characters of each `PWSID` are the state/region code (e.g.
+`IL`), so every table can be filtered to Illinois systems on read, before
+any joins. The helper `read_il()` does this and returns `NULL` if a file is
+absent. The reference-code table is not state-specific and is small, so it
+is read in full.
+
+```{r}
+#| label: read-sdwa
+
+read_il <- function(filename) {
+  path <- file.path(out_tabular_dir, filename)
+  if (!file.exists(path)) return(NULL)
+  read_csv(path, guess_max = 100000, show_col_types = FALSE) %>%
+    filter(str_starts(PWSID, "IL"))
+}
+
+pws         <- read_il("SDWA_PUB_WATER_SYSTEMS.csv")
+violations  <- read_il("SDWA_VIOLATIONS_ENFORCEMENT.csv")
+geo_areas   <- read_il("SDWA_GEOGRAPHIC_AREAS.csv")
+svc_areas   <- read_il("SDWA_SERVICE_AREAS.csv")
+lcr_samples <- read_il("SDWA_LCR_SAMPLES.csv")
+
+ref_codes <- read_csv(file.path(out_tabular_dir, "SDWA_REF_CODE_VALUES.csv"),
+                       show_col_types = FALSE)
+```
+
+## Narrow to Cook County systems
+
+The `COUNTY_SERVED` field in `SDWA_GEOGRAPHIC_AREAS.csv` is the most direct
+way to identify Cook County systems within the Illinois subset. Because it
+is self-reported by water systems and states, it may be incomplete;
+discrepancies against the boundary-based approach in @sec-boundaries are
+retained and reported rather than reconciled. The chunk below builds the
+list of Cook County `PWSID`s and filters the system, violation, and Lead
+and Copper Rule sample tables to it.
+
+```{r}
+#| label: filter-cook-county
+
+cook_pwsids <- geo_areas %>%
+  filter(str_to_upper(COUNTY_SERVED) == "COOK") %>%
+  distinct(PWSID) %>%
+  pull(PWSID)
+
+message(length(cook_pwsids), " unique PWSIDs identified as serving Cook County ",
+        "via the COUNTY_SERVED field.")
+
+pws_cook        <- pws        %>% filter(PWSID %in% cook_pwsids)
+violations_cook <- violations %>% filter(PWSID %in% cook_pwsids)
+lcr_cook        <- lcr_samples %>% filter(PWSID %in% cook_pwsids)
+```
+
+## Decode coded fields
+
+Violation and contaminant codes are stored as numeric/alphanumeric codes.
+The helper `decode()` looks up a given `VALUE_TYPE` in the reference-code
+table and joins its human-readable description onto the data as a new
+column. It is applied here to add violation and contaminant descriptions.
+
+```{r}
+#| label: decode-fields
+
+decode <- function(df, code_col, value_type, new_col) {
+  lookup <- ref_codes %>%
+    filter(VALUE_TYPE == value_type) %>%
+    select(VALUE_CODE, VALUE_DESCRIPTION) %>%
+    rename(!!new_col := VALUE_DESCRIPTION)
+
+  df %>%
+    left_join(lookup, by = setNames("VALUE_CODE", code_col))
+}
+
+violations_cook <- violations_cook %>%
+  decode("VIOLATION_CODE", "VIOLATION_CODE", "violation_description") %>%
+  decode("CONTAMINANT_CODE", "CONTAMINANT_CODE", "contaminant_description")
+```
+
+## Summarize violations by system
+
+The next chunk counts, for each water system, total violations,
+health-based violations, unresolved violations, and Lead and Copper Rule
+violations, along with the most recent violation date. These counts are
+then joined onto a subset of system attributes, with zero filled in for
+systems that have no recorded violations.
+
+Key field definitions:
+
+- **`OWNER_TYPE_CODE`**: F = Federal, L = Local government, M =
+  Public/Private, N = Native American, P = Private, S = State.
+- **`RULE_CODE == "350"`** isolates Lead and Copper Rule violations.
+- **`VIOLATION_STATUS`** values *Unaddressed* and *Addressed* (as opposed
+  to *Resolved*/*Archived*) are treated as **unresolved**, i.e. not yet
+  subject to a resolving enforcement action, per EPA's compliance status
+  categories.
+
+```{r}
+#| label: summarize-violations
+
+violation_summary <- violations_cook %>%
+  group_by(PWSID) %>%
+  summarise(
+    n_violations           = n(),
+    n_health_based         = sum(IS_HEALTH_BASED_IND == "Y", na.rm = TRUE),
+    n_unresolved           = sum(VIOLATION_STATUS %in% c("Unaddressed", "Addressed"), na.rm = TRUE),
+    n_lead_copper_rule     = sum(RULE_CODE == "350", na.rm = TRUE),
+    most_recent_violation  = max(VIOL_LAST_REPORTED_DATE, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+pws_cook_summary <- pws_cook %>%
+  select(PWSID, PWS_NAME, OWNER_TYPE_CODE, POPULATION_SERVED_COUNT,
+         PRIMARY_SOURCE_CODE, PWS_ACTIVITY_CODE, SERVICE_CONNECTIONS_COUNT) %>%
+  left_join(violation_summary, by = "PWSID") %>%
+  mutate(across(starts_with("n_"), ~ replace_na(.x, 0)))
+```
+
+## Save tabular outputs
+
+The Cook County system inventory, decoded violations, Lead and Copper Rule
+samples, and system-level violation summary are written to CSV.
+
+```{r}
+#| label: save-sdwa-tables
+
+write_csv(pws_cook,         file.path(out_tabular_dir, "cook_county_pws_inventory.csv"))
+write_csv(violations_cook,  file.path(out_tabular_dir, "cook_county_sdwa_violations.csv"))
+write_csv(lcr_cook,         file.path(out_tabular_dir, "cook_county_lead_copper_samples.csv"))
+write_csv(pws_cook_summary, file.path(out_tabular_dir, "cook_county_pws_violation_summary.csv"))
+```
+
+## Join violations to service area boundaries
+
+This is the key spatial–tabular join. It attaches the system-level
+violation summary to the service area polygons by `PWSID`, producing
+`cook_cws_with_violations` — the `sf` object on which the brief's
+interactive leaflet map is built. The result is also saved as a Shapefile.
+
+```{r}
+#| label: join-violations-boundaries
+
+cook_cws_with_violations <- cook_cws %>%
+  left_join(pws_cook_summary, by = c("PWSID" = "PWSID"))
+
+st_write(cook_cws_with_violations,
+          file.path(out_spatial_dir, "cook_county_water_systems_with_violations.shp"),
+          delete_dsn = TRUE)
+```
+
+## Notes
+
+- Filtering on the `PWSID` prefix (`str_starts(PWSID, "IL")`) captures
+  Illinois-primacy systems. A small number of tribal systems may be coded
+  under an EPA region prefix instead; check `EPA_REGION` if tribal systems
+  are in scope.
+- This is quarterly-snapshot data (`SUBMISSIONYEARQUARTER` field). A
+  violations *history* over time would require EPA's cumulative-year bulk
+  download or the individual violations file's date fields.
+
+# Lead Service Lines {#sec-lsl}
+
+This section mirrors the brief's Methodology subsection *Lead Service
+Lines*. Unlike SDWIS/ECHO compliance data or the EPA service area
+boundaries, there is no national or state-level aggregation of
+parcel/line-level lead service line inventories. Each municipality
+publishes its own, typically as an Esri *Lead Service Line Inventory*
+Experience Builder or Web AppBuilder app backed by a hosted FeatureServer.
+
+This section assumes those per-municipality FeatureServer URLs have been
+identified manually and aggregates them. Coverage is necessarily partial,
+so the section is written to degrade gracefully — skipping and warning
+rather than failing the whole pipeline — when no endpoints are yet
+resolved.
+
+## Municipal endpoint configuration
+
+The table below is the part of the pipeline that **requires manual
+collection** (see the brief's Methodology section for the browser/DevTools
+workflow used to resolve each URL). Populate it as endpoints are found, and
+leave `feature_server_url` as `NA` for municipalities not yet resolved.
+
+```{r}
+#| label: municipal-endpoints
+
+municipal_endpoints <- tibble::tribble(
+  ~municipality,       ~feature_server_url,                                    ~layer_id, ~notes,
+  "Glenview",          NA_character_,                                          0L,        "Experience Builder app confirmed at experience.arcgis.com/experience/f110f2dabfdb46ceb3bd04055de8ee9b; underlying FeatureServer not yet resolved -- likely hosted via GIS Consortium (public.gisconsortium.org) shared backend",
+  "Rolling Meadows",   NA_character_,                                          0L,        "Public map referenced at cityrm.org/935/Lead-Service-Line-Inventory; endpoint not yet resolved",
+  "Algonquin",         NA_character_,                                          0L,        "Public map referenced at algonquin.org; endpoint not yet resolved",
+  "Northbrook",        NA_character_,                                          0L,        "Village publishes inventory but map endpoint not yet resolved",
+  "Elgin",             NA_character_,                                          0L,        "Village publishes an address-lookup map; endpoint not yet resolved",
+  "Clarendon Hills",   NA_character_,                                          0L,        "Endpoint not yet resolved",
+  "Park Ridge",        NA_character_,                                          0L,        "Endpoint not yet resolved",
+  "North Riverside",   NA_character_,                                          0L,        "Endpoint not yet resolved",
+  "Lincolnwood",       NA_character_,                                          NA_integer_, "Publishes inventory only as a static PDF, not an interactive map -- not compatible with this pipeline; would need separate PDF-table extraction"
+)
+```
+
+## Standardized field mapping
+
+Esri's Lead Service Line Inventory template default field names are used as
+the target schema for combining municipal datasets. The status fields
+(`UtilityStatus`, `CustomerStatus`, `EntireServiceLineStatus`) take the
+values *Lead*, *Galvanized Requiring Replacement (GRR)*, *Non-Lead*, and
+*Unknown*.
+
+```{r}
+#| label: standard-fields
+
+standard_fields <- c(
+  "UtilityStatus", "CustomerStatus", "EntireServiceLineStatus",
+  "LocationID", "Address"
+)
+```
+
+## Single-municipality pull function
+
+`pull_municipal_lsl()` retrieves one municipality's inventory using
+`fetch_arcgis_features()` from @sec-arcgis-helpers. No spatial filter is
+applied because each municipal endpoint already covers just that
+municipality. The function returns `NULL` with a message — rather than an
+error — when the endpoint is missing, returns no features, or fails, and
+tags successful results with the municipality name.
+
+```{r}
+#| label: fn-pull-municipal-lsl
+
+pull_municipal_lsl <- function(municipality, url, layer_id) {
+  if (is.na(url)) {
+    message(municipality, ": no endpoint on file -- skipping.")
+    return(NULL)
+  }
+
+  tryCatch({
+    data <- fetch_arcgis_features(base_url = url, layer_id = layer_id)
+    if (length(data) == 0 || nrow(data) == 0) {
+      message(municipality, ": pull returned no features -- skipping.")
+      return(NULL)
+    }
+    data$municipality <- municipality
+    data
+  }, error = function(e) {
+    message(municipality, ": pull failed -- ", conditionMessage(e))
+    NULL
+  })
+}
+```
+
+## Pull, harmonize, and combine
+
+The helper `harmonize()` reduces each municipal dataset to the standard
+fields that are present (reporting any that are missing), so datasets with
+differing schemas can be stacked. The chunk then pulls every municipality
+with a resolved endpoint and drops failed or skipped pulls.
+
+If nothing was pulled — the expected state until endpoints are resolved —
+the section is skipped with a message and `cook_lsl_combined` is set to
+`NULL`. Otherwise the municipal datasets are combined, LSL status is
+counted by municipality, and both the combined layer and the summary are
+saved.
+
+```{r}
+#| label: combine-lsl
+
+harmonize <- function(df) {
+  present <- intersect(standard_fields, names(df))
+  missing <- setdiff(standard_fields, names(df))
+  if (length(missing) > 0) {
+    message(unique(df$municipality), ": missing expected fields -- ",
+            paste(missing, collapse = ", "))
+  }
+  df %>% select(municipality, all_of(present), geometry)
+}
+
+pulled <- municipal_endpoints %>%
+  filter(!is.na(feature_server_url)) %>%
+  pmap(function(municipality, feature_server_url, layer_id, notes) {
+    pull_municipal_lsl(municipality, feature_server_url, layer_id)
+  }) %>%
+  compact()   # drop NULLs (failed/skipped pulls)
+
+if (length(pulled) == 0) {
+  message("No municipal Lead Service Line endpoints were successfully pulled ",
+          "(municipal_endpoints has no resolved feature_server_url values). ",
+          "Skipping Lead Service Line aggregation -- populate municipal_endpoints ",
+          "with resolved FeatureServer URLs to enable this section.")
+  cook_lsl_combined <- NULL
+} else {
+  cook_lsl_combined <- map(pulled, harmonize) %>%
+    bind_rows() %>%
+    st_as_sf()
+
+  summary_by_municipality <- cook_lsl_combined %>%
+    st_drop_geometry() %>%
+    count(municipality, EntireServiceLineStatus)
+
+  print(summary_by_municipality)
+
+  st_write(cook_lsl_combined,
+           file.path(out_spatial_dir, "cook_county_lead_service_lines_combined.gpkg"),
+           delete_dsn = TRUE)
+  write_csv(summary_by_municipality,
+            file.path(out_tabular_dir, "cook_county_lsl_summary_by_municipality.csv"))
+}
+```
+
+## Notes
+
+- Report the number of municipalities with (a) no public inventory found,
+  (b) a PDF-only inventory, (c) an interactive map whose endpoint is
+  unresolved, and (d) a successfully aggregated inventory. This breakdown
+  is itself a meaningful empirical finding about inventory transparency and
+  fragmentation.
+- Field definitions can differ by municipality even under Esri's shared
+  template if local staff customized domains or labels. Manually verify
+  value-level equivalence (e.g. *Unknown* vs. *Lead Status Unknown*) before
+  treating combined counts as directly comparable.
+
+# Save Essential Objects for Rendering {#sec-save}
+
+Only the objects referenced by `drinking_water.qmd`'s evaluated
+(`eval: true`) chunks are persisted, so the `.RData` file stays small and
+the rendered brief depends only on what it needs:
+
+| Object | Description |
+|--------|-------------|
+| `cook_county` | `sf` polygon of the Cook County boundary, used as the reference outline on the brief's interactive leaflet map. |
+| `cook_cws_with_violations` | `sf` polygons of community water system service areas joined to the system-level SDWA violation summary. This is the sole data source for the interactive map (fill, hover labels, and the derived violation-density measure computed in the brief). |
+
+All other intermediate and raw objects (`pws_cook`, `violations_cook`,
+`lcr_cook`, `geo_areas`, `svc_areas`, `ref_codes`, `cook_cws`,
+`cook_lsl_combined`, etc.) remain available through the CSV, GeoPackage,
+and Shapefile outputs written above, but are intentionally excluded from
+the `.RData` file the brief loads at render time.
+
+The final chunk saves the two essential objects with `xz` compression.
+
+```{r}
+#| label: save-rdata
+
+save(cook_county, cook_cws_with_violations, file = out_rdata_path, compress = "xz")
+
+message("Saved essential rendering data (cook_county, cook_cws_with_violations) to ",
+        out_rdata_path)
+```
