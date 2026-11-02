@@ -557,19 +557,54 @@ Key field definitions:
   subject to a resolving enforcement action, per EPA's compliance status
   categories.
 
+### Parse violation dates
+
+`VIOL_LAST_REPORTED_DATE` is read in as a character field (EPA ECHO
+exports dates as `MM/DD/YYYY`). Taking the maximum of these strings would
+compare them alphabetically rather than chronologically (e.g.
+`"12/01/2015"` sorts after `"01/15/2023"`), so the helper below converts
+them to `Date` values *before* the most recent violation is identified.
+It accepts both `MM/DD/YYYY` and ISO `YYYY-MM-DD` formats, ignores any
+trailing time component, and passes through values `read_csv()` has
+already parsed as dates.
+
+```{r}
+#| label: fn-parse-violation-date
+
+parse_violation_date <- function(x) {
+  if (inherits(x, "Date")) return(x)
+  if (inherits(x, "POSIXt")) return(as.Date(x))
+  x <- trimws(as.character(x))
+  coalesce(
+    as.Date(x, format = "%m/%d/%Y"),
+    as.Date(x, format = "%Y-%m-%d")
+  )
+}
+```
+
+### Summarize by system
+
+The chunk below computes the system-level counts and the most recent
+violation date (a `Date`, or `NA` if a system has no dated violations),
+then adds `most_recent_violation_year`, a numeric year derived from that
+date, for filtering and mapping by year.
+
 ```{r}
 #| label: summarize-violations
 
 violation_summary <- violations_cook %>%
+  mutate(viol_last_reported_date = parse_violation_date(VIOL_LAST_REPORTED_DATE)) %>%
   group_by(PWSID) %>%
   summarise(
     n_violations           = n(),
     n_health_based         = sum(IS_HEALTH_BASED_IND == "Y", na.rm = TRUE),
     n_unresolved           = sum(VIOLATION_STATUS %in% c("Unaddressed", "Addressed"), na.rm = TRUE),
     n_lead_copper_rule     = sum(RULE_CODE == "350", na.rm = TRUE),
-    most_recent_violation  = max(VIOL_LAST_REPORTED_DATE, na.rm = TRUE),
+    most_recent_violation  = if (all(is.na(viol_last_reported_date))) as.Date(NA)
+                             else max(viol_last_reported_date, na.rm = TRUE),
     .groups = "drop"
-  )
+  ) %>%
+  mutate(most_recent_violation_year = as.numeric(format(most_recent_violation, "%Y")))
 
 pws_cook_summary <- pws_cook %>%
   select(PWSID, PWS_NAME, OWNER_TYPE_CODE, POPULATION_SERVED_COUNT,
@@ -597,7 +632,10 @@ write_csv(pws_cook_summary, file.path(out_tabular_dir, "cook_county_pws_violatio
 This is the key spatial–tabular join. It attaches the system-level
 violation summary to the service area polygons by `PWSID`, producing
 `cook_cws_with_violations` — the `sf` object on which the brief's
-interactive leaflet map is built. The result is also saved as a Shapefile.
+interactive leaflet map is built. It carries `most_recent_violation` as a
+`Date` and `most_recent_violation_year` as a number. The result is also
+saved as a Shapefile, which shortens field names to 10 characters, so both
+fields appear there under abbreviated names.
 
 ```{r}
 #| label: join-violations-boundaries

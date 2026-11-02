@@ -512,16 +512,25 @@ violations_cook <- violations_cook |>
 
 ## ---- 6. Summarize violations by system (a natural first analytic table) ------
 
+## VIOL_LAST_REPORTED_DATE is character (MM/DD/YYYY); convert to Date before
+## taking the max so the most recent date is found chronologically, not
+## alphabetically. Also add the year of the most recent violation.
 violation_summary <- violations_cook |>
+  mutate(viol_last_reported_date = coalesce(
+    as.Date(VIOL_LAST_REPORTED_DATE, format = "%m/%d/%Y"),
+    as.Date(VIOL_LAST_REPORTED_DATE, format = "%Y-%m-%d")
+  )) |>
   group_by(PWSID) |>
   summarise(
     n_violations           = n(),
     n_health_based         = sum(IS_HEALTH_BASED_IND == "Y", na.rm = TRUE),
     n_unresolved           = sum(VIOLATION_STATUS %in% c("Unaddressed", "Addressed"), na.rm = TRUE),
     n_lead_copper_rule     = sum(RULE_CODE == "350", na.rm = TRUE),
-    most_recent_violation  = max(VIOL_LAST_REPORTED_DATE, na.rm = TRUE),
+    most_recent_violation  = if (all(is.na(viol_last_reported_date))) as.Date(NA)
+                             else max(viol_last_reported_date, na.rm = TRUE),
     .groups = "drop"
-  )
+  ) |>
+  mutate(most_recent_violation_year = as.numeric(format(most_recent_violation, "%Y")))
 
 pws_cook_summary <- pws_cook |>
   select(PWSID, PWS_NAME, OWNER_TYPE_CODE, POPULATION_SERVED_COUNT,
