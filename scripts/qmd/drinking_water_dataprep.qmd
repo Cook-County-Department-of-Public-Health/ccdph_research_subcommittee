@@ -687,24 +687,35 @@ Information](https://epa.illinois.gov/topics/drinking-water/public-water-users/l
 
 The CSV is downloaded manually from the IEPA page above and saved to the
 project's `data/` folder; it is not retrieved automatically. The chunk
-below looks for it in `data/` relative to this document (`scripts/qmd/data/`)
-and in the repository-level `data/` folder, and stops with an informative
-message if it is in neither location.
+below looks for it in `data/` relative to this document (`scripts/qmd/data/`),
+in `data/tabular/`, and in the repository-level `data/` folder. The name
+is matched loosely, so a browser-renamed copy (for example,
+`ServiceLineMaterialInventoryReports (1).csv`) is still found. If the file
+is in none of these places, the chunk stops and prints the full folder
+paths searched and the current working directory.
 
 ```{r}
 #| label: lsl-inventory-path
 
-lsl_inventory_candidates <- c(
-  file.path("data", "ServiceLineMaterialInventoryReports.csv"),
-  file.path("..", "..", "data", "ServiceLineMaterialInventoryReports.csv")
-)
+lsl_search_dirs <- c("data", out_tabular_dir, file.path("..", "..", "data"))
 
-lsl_inventory_path <- lsl_inventory_candidates[file.exists(lsl_inventory_candidates)][1]
+## Match the file name loosely, so a browser-renamed download such as
+## "ServiceLineMaterialInventoryReports (1).csv" is still found.
+lsl_inventory_candidates <- unlist(lapply(lsl_search_dirs, function(d) {
+  if (!dir.exists(d)) return(character(0))
+  list.files(d, pattern = "(?i)^ServiceLineMaterialInventoryReports.*\\.csv$", full.names = TRUE)
+}))
+
+lsl_inventory_path <- lsl_inventory_candidates[1]
 
 if (is.na(lsl_inventory_path)) {
-  stop("ServiceLineMaterialInventoryReports.csv was not found. Download it from ",
-       "https://epa.illinois.gov/topics/drinking-water/public-water-users/lead-service-line-information.html",
-       "and save it to one of: ", paste(lsl_inventory_candidates, collapse = ", "))
+  stop("ServiceLineMaterialInventoryReports.csv was not found.\n",
+       "  1. Download it from ",
+       "https://epa.illinois.gov/topics/drinking-water/public-water-users/lead-service-line-information.html\n",
+       "  2. Save it to one of these folders:\n    ",
+       paste(normalizePath(lsl_search_dirs, mustWork = FALSE), collapse = "\n    "), "\n",
+       "  Current working directory: ", getwd(),
+       " (run this pipeline from scripts/qmd/).")
 }
 
 message("Reading IEPA service line inventory from ", lsl_inventory_path)
