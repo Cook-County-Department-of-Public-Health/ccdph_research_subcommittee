@@ -99,6 +99,7 @@ saved to the `data/` folder (see @sec-lsl).
 | `data/tabular/cook_county_ucmr5_system_contaminant.csv` | UCMR 5 results summarized by system and contaminant, with reference-level flags |
 | `data/tabular/cook_county_ucmr5_system_summary.csv` | One-row-per-system UCMR 5 summary |
 | `data/drinking_water_dataprep.RData` | Essential objects loaded directly by `drinking_water.qmd` |
+| `data/drinking_water_dataprep_all.RData` | All processed Cook County objects, for further analysis (@sec-save-all) |
 
 # Setup {#sec-setup}
 
@@ -1256,4 +1257,87 @@ save(cook_county, cook_cws_with_violations, ucmr5_cook_system_contaminant,
 
 message("Saved essential rendering data (cook_county, cook_cws_with_violations, ",
         "ucmr5_cook_system_contaminant) to ", out_rdata_path)
+```
+
+## Save all processed Cook County data {#sec-save-all}
+
+The lightweight file above holds only what the brief renders. For further
+analysis, the next chunk saves a second, more complete `.RData` file
+(`data/drinking_water_dataprep_all.RData`) that holds every processed
+Cook County object the pipeline creates, so that the analysis data can be
+loaded in a single step without reading the individual CSV and spatial
+outputs:
+
+| Object | Section | Description |
+|--------|---------|-------------|
+| `cook_county` | @sec-boundaries | Cook County boundary (`sf`) |
+| `cook_cws` | @sec-boundaries | Community water system service areas clipped to Cook County (`sf`) |
+| `cook_cws_with_violations` | @sec-boundaries–@sec-ucmr5 | Service areas with violation, lead service line, and UCMR 5 fields (`sf`) |
+| `cook_pwsids` | @sec-sdwis | `PWSID`s identified as serving Cook County via `COUNTY_SERVED` |
+| `pws_cook` | @sec-sdwis | Cook County public water system inventory |
+| `violations_cook` | @sec-sdwis | Decoded SDWA violations for Cook County systems |
+| `lcr_cook` | @sec-sdwis | Lead and Copper Rule sample results |
+| `violation_summary` | @sec-sdwis | Violation counts by system |
+| `pws_cook_summary` | @sec-sdwis | System attributes joined to violation counts |
+| `cook_lsl_history` | @sec-lsl | IEPA service line inventories, all reporting years |
+| `cook_lsl_latest` | @sec-lsl | Each system's most recent service line inventory |
+| `lsl_summary_by_year` | @sec-lsl | Service line totals by reporting year |
+| `ucmr5_cook` | @sec-ucmr5 | Standardized UCMR 5 results for Cook County systems |
+| `ucmr5_cook_system_contaminant` | @sec-ucmr5 | UCMR 5 results by system and contaminant, with reference-level flags |
+| `ucmr5_system_summary` | @sec-ucmr5 | One-row-per-system UCMR 5 summary |
+| `ucmr5_reference` | @sec-ucmr5 | Health-based reference levels used for UCMR 5 screening |
+
+Large statewide and national source tables (`pws`, `violations`,
+`geo_areas`, `svc_areas`, `lcr_samples`, `ref_codes`, `lsl_raw`,
+`ucmr5_raw`) are left out because they can be re-read from the downloaded
+source files. If any listed object was not created (for example, because a
+section was skipped), the chunk reports it and saves the rest instead of
+failing. A small `dataprep_info` list records when the file was created
+and which objects it holds.
+
+```{r}
+#| label: save-rdata-all
+
+out_rdata_all_path <- "data/drinking_water_dataprep_all.RData"
+
+all_objects <- c(
+  # Service area boundaries
+  "cook_county", "cook_cws", "cook_cws_with_violations",
+  # SDWIS/ECHO violations and compliance
+  "cook_pwsids", "pws_cook", "violations_cook", "lcr_cook",
+  "violation_summary", "pws_cook_summary",
+  # IEPA lead service line inventories
+  "cook_lsl_history", "cook_lsl_latest", "lsl_summary_by_year",
+  # UCMR 5 (PFAS and lithium)
+  "ucmr5_cook", "ucmr5_cook_system_contaminant", "ucmr5_system_summary",
+  "ucmr5_reference"
+)
+
+## Look objects up in the environment this chunk runs in (exists() called
+## through vapply() would otherwise search vapply's own frame).
+pipeline_env      <- environment()
+available_objects <- all_objects[vapply(all_objects, exists, logical(1),
+                                        envir = pipeline_env, inherits = FALSE)]
+missing_objects   <- setdiff(all_objects, available_objects)
+
+if (length(missing_objects) > 0) {
+  message("Not saved (object not created in this run): ",
+          paste(missing_objects, collapse = ", "))
+}
+
+dataprep_info <- list(
+  created       = Sys.time(),
+  objects       = available_objects,
+  missing       = missing_objects,
+  sdwa_source   = zip_path,
+  lsl_source    = if (exists("lsl_inventory_path")) lsl_inventory_path else NA_character_,
+  ucmr5_source  = if (exists("ucmr5_zip_path")) ucmr5_zip_path else NA_character_,
+  r_version     = R.version.string
+)
+
+save(list = c(available_objects, "dataprep_info"),
+     file = out_rdata_all_path, envir = pipeline_env, compress = "xz")
+
+message("Saved ", length(available_objects), " objects to ", out_rdata_all_path,
+        " (", round(file.size(out_rdata_all_path) / 1024^2, 1), " MB)")
 ```
