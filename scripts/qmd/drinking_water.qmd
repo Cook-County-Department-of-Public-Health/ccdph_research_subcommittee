@@ -64,10 +64,37 @@ library("leaflet.extras")  # addFullscreenControl(), addResetMapButton()
 ## are produced by drinking_water_dataprep.qmd, which runs the full
 ## Methodology-section data pipeline (EPA service area boundaries, SDWIS/ECHO
 ## violations, IEPA lead service line inventories, and UCMR 5 results) and
-## saves only these essential objects for rendering this document. Render
-## that document (from this directory) to regenerate data/drinking_water_dataprep.RData
+## exports every dataset as a layer of data/drinking_water_dataprep.gpkg.
+## Render that document (from this directory) to regenerate the GeoPackage
 ## after a data refresh.
-load("../../data/drinking_water_dataprep.RData")
+##
+## Spatial data are imported from GeoPackage, not Shapefile, so that long
+## field names (e.g. most_recent_violation_year, lsl_pct_lead_or_unknown,
+## ucmr5_lithium_above_hrl) and date/logical types are preserved.
+dataprep_gpkg_candidates <- c(
+  file.path("data", "drinking_water_dataprep.gpkg"),
+  file.path("..", "..", "data", "drinking_water_dataprep.gpkg")
+)
+dataprep_gpkg <- dataprep_gpkg_candidates[file.exists(dataprep_gpkg_candidates)][1]
+if (is.na(dataprep_gpkg)) {
+  stop("drinking_water_dataprep.gpkg not found in: ",
+       paste(dataprep_gpkg_candidates, collapse = ", "),
+       ". Render drinking_water_dataprep.qmd first.")
+}
+
+read_gpkg_layer <- function(layer) {
+  x <- sf::st_read(dataprep_gpkg, layer = layer, quiet = TRUE)
+  if (inherits(x, "sf")) {
+    sf::st_geometry(x) <- "geometry"  # GeoPackage names it "geom"; restore R name
+  } else {
+    x <- tibble::as_tibble(x)
+  }
+  x
+}
+
+cook_county                   <- read_gpkg_layer("cook_county")
+cook_cws_with_violations      <- read_gpkg_layer("cook_cws_with_violations")
+ucmr5_cook_system_contaminant <- read_gpkg_layer("ucmr5_cook_system_contaminant")
 ```
 
 # Background
@@ -335,11 +362,9 @@ fallback_download <- function(base_url, layer_id = 0, where = "1=1",
 
 glimpse(st_drop_geometry(cook_cws))
 
-# Save as a GeoPackage (preferred - single file, preserves types) and Shapefile
-# (for compatibility with older GIS software) into /mnt/user-data/outputs
+# Save as a GeoPackage: a single file that keeps full field names and types
+# (Shapefiles cut field names to 10 characters, so they are not used)
 st_write(cook_cws, "data/spatial/cook_county_water_system_boundaries.gpkg",
-          delete_dsn = TRUE)
-st_write(cook_cws, "data/spatial/cook_county_water_system_boundaries.shp",
           delete_dsn = TRUE)
 
 ## ---- 5. Quick visual check ----------------------------------------------------
@@ -555,11 +580,13 @@ write_csv(pws_cook_summary,  file.path(out_dir, "cook_county_pws_violation_summa
 ## the spatial boundaries on PWSID for mapping.
 
 library(sf)
+# PWS_NAME is renamed because GeoPackage treats it and the boundary layer's
+# PWS_Name as the same column (names are case-insensitive)
 cook_cws_with_violations <- cook_cws |>
-  left_join(pws_cook_summary, by = c("PWSID" = "PWSID"))
+  left_join(rename(pws_cook_summary, PWS_NAME_SDWIS = PWS_NAME), by = "PWSID")
 
 st_write(cook_cws_with_violations,
-          file.path("data/spatial/cook_county_water_systems_with_violations.shp"),
+          "data/spatial/cook_county_water_systems_with_violations.gpkg",
           delete_dsn = TRUE)
 
 ## ---------------------------------------------------------------------------

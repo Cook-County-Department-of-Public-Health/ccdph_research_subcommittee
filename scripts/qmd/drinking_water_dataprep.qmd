@@ -56,9 +56,10 @@ chunks for documentation purposes only. Those chunks are not meant to be
 re-run — and re-download more than 400 MB of EPA data — every time the
 brief is rendered. Instead, this pipeline is run separately on a refresh
 cadence, and the brief's single evaluated setup chunk (*load prepared
-analysis data*) simply `load()`s this pipeline's output to make
-`cook_county` and `cook_cws_with_violations` available to the Analysis
-section's interactive leaflet map.
+analysis data*) reads this pipeline's GeoPackage
+(`data/drinking_water_dataprep.gpkg`) to make `cook_county`,
+`cook_cws_with_violations`, and `ucmr5_cook_system_contaminant` available
+to the Analysis section, including its interactive leaflet map.
 
 ## Usage
 
@@ -91,11 +92,17 @@ saved to the `data/` folder (see @sec-lsl).
 | `data/csv/<dataset>.csv` | One CSV per dataset, across all four tiers (intermediate, detailed, analytical, summary); see @sec-export for the full list |
 | `data/csv/dataset_manifest.csv` | One row per exported dataset: tier, description, size, geometry type, file locations |
 | `data/csv/data_dictionary.csv` | One row per column of every exported dataset: R class and share missing |
-| `data/drinking_water_dataprep.gpkg` | GeoPackage with one layer per dataset (spatial layers and attribute tables), plus the manifest and data dictionary |
-| `data/drinking_water_dataprep.RData` | Essential objects loaded directly by `drinking_water.qmd` |
+| `data/drinking_water_dataprep.gpkg` | GeoPackage with one layer per dataset (spatial layers and attribute tables), plus the manifest and data dictionary. `drinking_water.qmd` imports its spatial data from this file |
+| `data/drinking_water_dataprep.RData` | Essential objects for the brief, as native R objects (the brief imports spatial data from the GeoPackage instead) |
 | `data/drinking_water_dataprep_all.RData` | Comprehensive file with every exported dataset, the manifest, the data dictionary, and run information (@sec-save-all) |
-| `data/spatial/cook_county_water_system_boundaries.{gpkg,shp}` | Cook County community water system service areas (standalone copy) |
-| `data/spatial/cook_county_water_systems_with_violations.shp` | Service areas joined to system-level violation summaries (Shapefile, for older GIS software) |
+| `data/spatial/cook_county_water_system_boundaries.gpkg` | Cook County community water system service areas (standalone copy) |
+| `data/spatial/cook_county_water_systems_with_violations.gpkg` | Service areas joined to system-level violation summaries (standalone copy) |
+
+All spatial data are saved as GeoPackage, not Shapefile. Shapefiles cut
+field names to 10 characters (so `most_recent_violation_year` and the
+`lsl_*` and `ucmr5_*` fields would be renamed) and do not store dates,
+times, or logical values reliably. GeoPackage keeps full field names and
+types in a single file.
 
 # Setup {#sec-setup}
 
@@ -357,7 +364,7 @@ cook_cws <- cook_cws_valid %>%
 ## Save and quality check
 
 The next chunk prints a compact summary of the boundary attributes and
-writes the boundaries to both GeoPackage and Shapefile formats.
+writes the boundaries to a GeoPackage.
 
 ```{r}
 #| label: save-boundaries
@@ -365,9 +372,7 @@ writes the boundaries to both GeoPackage and Shapefile formats.
 glimpse(st_drop_geometry(cook_cws))
 
 st_write(cook_cws, file.path(out_spatial_dir, "cook_county_water_system_boundaries.gpkg"),
-          delete_dsn = TRUE)
-st_write(cook_cws, file.path(out_spatial_dir, "cook_county_water_system_boundaries.shp"),
-          delete_dsn = TRUE)
+         delete_dsn = TRUE, quiet = TRUE)
 ```
 
 As a quick visual check, the service areas are mapped within the Cook
@@ -631,19 +636,24 @@ This is the key spatial–tabular join. It attaches the system-level
 violation summary to the service area polygons by `PWSID`, producing
 `cook_cws_with_violations` — the `sf` object on which the brief's
 interactive leaflet map is built. It carries `most_recent_violation` as a
-`Date` and `most_recent_violation_year` as a number. The result is also
-saved as a Shapefile, which shortens field names to 10 characters, so both
-fields appear there under abbreviated names.
+`Date` and `most_recent_violation_year` as a number.
+
+Both tables have a system name field: `PWS_Name` from the boundaries and
+`PWS_NAME` from SDWIS. GeoPackage (like SQLite) treats column names that
+differ only in case as the same column, so the SDWIS name is renamed to
+`PWS_NAME_SDWIS` in the join. The result is saved as a GeoPackage, which
+keeps the full field names. The version with every joined field (lead
+service lines and UCMR 5) is exported in @sec-export.
 
 ```{r}
 #| label: join-violations-boundaries
 
 cook_cws_with_violations <- cook_cws %>%
-  left_join(pws_cook_summary, by = c("PWSID" = "PWSID"))
+  left_join(rename(pws_cook_summary, PWS_NAME_SDWIS = PWS_NAME), by = "PWSID")
 
 st_write(cook_cws_with_violations,
-          file.path(out_spatial_dir, "cook_county_water_systems_with_violations.shp"),
-          delete_dsn = TRUE)
+         file.path(out_spatial_dir, "cook_county_water_systems_with_violations.gpkg"),
+         delete_dsn = TRUE, quiet = TRUE)
 ```
 
 ## Notes
@@ -1291,12 +1301,12 @@ dataset_registry <- tibble::tribble(
 
 Three helpers do the export:
 
-- `gpkg_safe_names()` makes column names unique without regard to case.
-  GeoPackage (SQLite) treats `PWS_Name` and `PWS_NAME` as the same column,
-  and both appear in `cook_cws_with_violations` (one from the boundaries,
-  one from SDWIS). A later duplicate gets a numeric suffix (e.g.
-  `PWS_NAME_1`). Only the exported copies are renamed; the R objects are
-  unchanged.
+- `gpkg_safe_names()` makes column names unique without regard to case,
+  because GeoPackage (SQLite) treats names such as `PWS_Name` and
+  `PWS_NAME` as the same column. The known case is already handled in
+  @sec-sdwis; this is a safeguard for any new fields. A later duplicate
+  gets a numeric suffix (e.g. `NAME_1`). Only the exported copies are
+  renamed; the R objects are unchanged.
 - `csv_table()` returns the table to write to CSV: the data itself, or for
   `sf` objects the attributes plus a representative point (`point_lon`,
   `point_lat`). `st_point_on_surface()` is used instead of the centroid so
@@ -1426,8 +1436,12 @@ message("Exported ", nrow(dataset_manifest), " datasets to ", out_csv_dir, "/ an
 
 # Save R Data Files {#sec-save}
 
-Two `.RData` files are written: a lightweight one loaded by the rendered
-brief, and a comprehensive one holding every exported dataset.
+Two `.RData` files are written: a lightweight one with the objects the
+rendered brief needs, and a comprehensive one holding every exported
+dataset. Both keep `sf` objects as native R objects for convenience. The
+brief itself imports its spatial data from the GeoPackage
+(`data/drinking_water_dataprep.gpkg`), which is the main format for all
+spatial outputs.
 
 ## Essential objects for rendering
 
