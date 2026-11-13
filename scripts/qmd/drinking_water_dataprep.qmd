@@ -703,7 +703,7 @@ lsl_inventory_path <- lsl_inventory_candidates[file.exists(lsl_inventory_candida
 
 if (is.na(lsl_inventory_path)) {
   stop("ServiceLineMaterialInventoryReports.csv was not found. Download it from ",
-       "https://epa.illinois.gov/topics/drinking-water/public-water-users/lead-service-line-information.html ",
+       "https://epa.illinois.gov/topics/drinking-water/public-water-users/lead-service-line-information.html",
        "and save it to one of: ", paste(lsl_inventory_candidates, collapse = ", "))
 }
 
