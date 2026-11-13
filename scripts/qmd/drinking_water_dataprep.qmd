@@ -44,8 +44,10 @@ in that brief's Methodology section:
    PFAS and lithium, summarized by system and compared with health-based
    reference levels (@sec-ucmr5).
 
-The final step (@sec-save) writes a single, lightweight `.RData` file
-containing only the objects the *rendered data brief* actually needs.
+The final steps export every intermediate, detailed, analytical, and
+summary dataset to CSV and GeoPackage (@sec-export), then write two
+`.RData` files (@sec-save): a lightweight one with only the objects the
+*rendered data brief* needs, and a comprehensive one with every dataset.
 
 ## Rationale
 
@@ -86,20 +88,14 @@ saved to the `data/` folder (see @sec-lsl).
 
 | File | Description |
 |------|-------------|
-| `data/spatial/cook_county_water_system_boundaries.{gpkg,shp}` | Cook County community water system service areas |
-| `data/spatial/cook_county_water_systems_with_violations.shp` | Service areas joined to system-level violation summaries |
-| `data/tabular/cook_county_pws_inventory.csv` | Cook County public water system inventory |
-| `data/tabular/cook_county_sdwa_violations.csv` | Decoded SDWA violations for Cook County systems |
-| `data/tabular/cook_county_lead_copper_samples.csv` | Lead and Copper Rule sample results |
-| `data/tabular/cook_county_pws_violation_summary.csv` | Violation counts summarized by water system |
-| `data/tabular/cook_county_lsl_inventory_history.csv` | IEPA service line material inventories for Cook County systems, all reporting years |
-| `data/tabular/cook_county_lsl_inventory_latest.csv` | Each system's most recent IEPA service line inventory |
-| `data/tabular/cook_county_lsl_summary_by_year.csv` | Service line material totals across Cook County systems by reporting year |
-| `data/tabular/cook_county_ucmr5_results.csv` | UCMR 5 results (PFAS and lithium) for Cook County systems |
-| `data/tabular/cook_county_ucmr5_system_contaminant.csv` | UCMR 5 results summarized by system and contaminant, with reference-level flags |
-| `data/tabular/cook_county_ucmr5_system_summary.csv` | One-row-per-system UCMR 5 summary |
+| `data/csv/<dataset>.csv` | One CSV per dataset, across all four tiers (intermediate, detailed, analytical, summary); see @sec-export for the full list |
+| `data/csv/dataset_manifest.csv` | One row per exported dataset: tier, description, size, geometry type, file locations |
+| `data/csv/data_dictionary.csv` | One row per column of every exported dataset: R class and share missing |
+| `data/drinking_water_dataprep.gpkg` | GeoPackage with one layer per dataset (spatial layers and attribute tables), plus the manifest and data dictionary |
 | `data/drinking_water_dataprep.RData` | Essential objects loaded directly by `drinking_water.qmd` |
-| `data/drinking_water_dataprep_all.RData` | All processed Cook County objects, for further analysis (@sec-save-all) |
+| `data/drinking_water_dataprep_all.RData` | Comprehensive file with every exported dataset, the manifest, the data dictionary, and run information (@sec-save-all) |
+| `data/spatial/cook_county_water_system_boundaries.{gpkg,shp}` | Cook County community water system service areas (standalone copy) |
+| `data/spatial/cook_county_water_systems_with_violations.shp` | Service areas joined to system-level violation summaries (Shapefile, for older GIS software) |
 
 # Setup {#sec-setup}
 
@@ -120,6 +116,7 @@ library(httr2)      # ArcGIS REST Feature Service queries (see fetch_arcgis_feat
 library(geojsonsf)  # parse ArcGIS REST GeoJSON responses into sf
 library(tigris)     # counties()
 library(ggplot2)    # quick visual QA plot
+library(purrr)      # pmap_dfr, map_dfr for dataset export
 ```
 
 ::: {.callout-note}
@@ -147,19 +144,25 @@ strict about validity and will error on these, so the next chunk falls back
 to the more forgiving GEOS planar engine for the duration of the pipeline.
 Geometries are still explicitly repaired with `st_make_valid()` as a second
 safeguard. The chunk also defines the output locations and creates the
-output folders if they do not already exist.
+output folders if they do not already exist. Downloaded source files go
+to `data/tabular/`; the datasets the pipeline produces are exported to
+`data/csv/` and `data/drinking_water_dataprep.gpkg` in @sec-export.
 
 ```{r}
 #| label: configure-environment
 
 sf::sf_use_s2(FALSE)
 
-out_spatial_dir <- "data/spatial"
-out_tabular_dir <- "data/tabular"
-out_rdata_path  <- "data/drinking_water_dataprep.RData"
+out_spatial_dir    <- "data/spatial"
+out_tabular_dir    <- "data/tabular"   # downloaded and extracted source files
+out_csv_dir        <- "data/csv"       # exported datasets, one CSV each (@sec-export)
+out_gpkg_path      <- "data/drinking_water_dataprep.gpkg"
+out_rdata_path     <- "data/drinking_water_dataprep.RData"
+out_rdata_all_path <- "data/drinking_water_dataprep_all.RData"
 
 dir.create(out_spatial_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create(out_tabular_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(out_csv_dir,     showWarnings = FALSE, recursive = TRUE)
 ```
 
 # Public Water System Service Area Boundaries {#sec-boundaries}
@@ -622,20 +625,6 @@ pws_cook_summary <- pws_cook %>%
   mutate(across(starts_with("n_"), ~ replace_na(.x, 0)))
 ```
 
-## Save tabular outputs
-
-The Cook County system inventory, decoded violations, Lead and Copper Rule
-samples, and system-level violation summary are written to CSV.
-
-```{r}
-#| label: save-sdwa-tables
-
-write_csv(pws_cook,         file.path(out_tabular_dir, "cook_county_pws_inventory.csv"))
-write_csv(violations_cook,  file.path(out_tabular_dir, "cook_county_sdwa_violations.csv"))
-write_csv(lcr_cook,         file.path(out_tabular_dir, "cook_county_lead_copper_samples.csv"))
-write_csv(pws_cook_summary, file.path(out_tabular_dir, "cook_county_pws_violation_summary.csv"))
-```
-
 ## Join violations to service area boundaries
 
 This is the key spatial–tabular join. It attaches the system-level
@@ -856,7 +845,7 @@ lsl_summary_by_year <- cook_lsl_history %>%
 print(lsl_summary_by_year)
 ```
 
-## Join inventories to service areas and save
+## Join inventories to service areas
 
 Each system's most recent inventory is joined by `PWSID` to
 `cook_cws_with_violations`, adding the `lsl_*` fields alongside the
@@ -864,10 +853,10 @@ violation summary so that lead service line prevalence can be mapped and
 compared with compliance history. Service areas with no matching IEPA
 report (for example, the Indiana systems) receive `NA` for these fields.
 The full history, the latest-report table, and the yearly summary are
-also written to CSV.
+exported with the other datasets in @sec-export.
 
 ```{r}
-#| label: join-save-lsl
+#| label: join-lsl
 
 lsl_join_fields <- cook_lsl_latest %>%
   select(PWSID = FacilityId, lsl_reporting_year, lsl_total, lsl_lead,
@@ -879,10 +868,6 @@ cook_cws_with_violations <- cook_cws_with_violations %>%
 
 message(sum(!is.na(cook_cws_with_violations$lsl_reporting_year)), " of ",
         nrow(cook_cws_with_violations), " service areas matched to an IEPA inventory report.")
-
-write_csv(cook_lsl_history,    file.path(out_tabular_dir, "cook_county_lsl_inventory_history.csv"))
-write_csv(cook_lsl_latest,     file.path(out_tabular_dir, "cook_county_lsl_inventory_latest.csv"))
-write_csv(lsl_summary_by_year, file.path(out_tabular_dir, "cook_county_lsl_summary_by_year.csv"))
 ```
 
 ## Notes
@@ -1205,19 +1190,6 @@ message(sum(!is.na(cook_cws_with_violations$ucmr5_n_samples)), " of ",
         nrow(cook_cws_with_violations), " service areas matched to UCMR 5 results.")
 ```
 
-## Save UCMR 5 outputs
-
-The Cook County results, the system-by-contaminant summary, and the
-system-level summary are written to CSV.
-
-```{r}
-#| label: ucmr5-save
-
-write_csv(ucmr5_cook,                    file.path(out_tabular_dir, "cook_county_ucmr5_results.csv"))
-write_csv(ucmr5_cook_system_contaminant, file.path(out_tabular_dir, "cook_county_ucmr5_system_contaminant.csv"))
-write_csv(ucmr5_system_summary,          file.path(out_tabular_dir, "cook_county_ucmr5_system_summary.csv"))
-```
-
 ## Notes
 
 - UCMR 5 results are a snapshot of 2023–2025 monitoring and are released
@@ -1229,7 +1201,235 @@ write_csv(ucmr5_system_summary,          file.path(out_tabular_dir, "cook_county
   UCMR results are not used for compliance, and PFAS MCL compliance
   monitoring does not begin until later in the decade.
 
-# Save Essential Objects for Rendering {#sec-save}
+
+# Export All Datasets {#sec-export}
+
+Every Cook County dataset the pipeline produces is exported here in one
+place, in two formats:
+
+- **CSV**: one file per dataset in `data/csv/`. For spatial (`sf`)
+  datasets, the CSV holds the attribute table plus `point_lon` and
+  `point_lat`, a representative point inside each feature (WGS 84). The
+  full geometry is in the GeoPackage.
+- **GeoPackage**: a single file, `data/drinking_water_dataprep.gpkg`,
+  with one layer per dataset. Spatial datasets are stored as feature
+  layers and non-spatial datasets as plain attribute tables, so all
+  of them open from one file in R (`sf::st_read()`), QGIS, or ArcGIS.
+
+Each dataset is assigned to one of four tiers:
+
+| Tier | Meaning |
+|------|---------|
+| **intermediate** | Cook County subsets and lookup tables used to build the later datasets, saved so each processing step can be traced and checked |
+| **detailed** | Record-level data (one row per system, violation, sample, report, or result) |
+| **analytical** | Analysis-ready datasets, including the service area polygons with all joined fields |
+| **summary** | Aggregated tables (by system, contaminant, or reporting year) |
+
+## Prepare intermediate subsets
+
+Two of the statewide SDWA tables (geographic areas and service areas) are
+used only to identify and describe Cook County systems. Their Cook County
+rows are kept here as intermediate datasets. The `PWSID` list from
+@sec-sdwis is also turned into a table that records how each system was
+identified: through `COUNTY_SERVED`, through an intersecting service area
+boundary, or both.
+
+```{r}
+#| label: export-intermediate-subsets
+
+geo_areas_cook <- geo_areas %>% filter(PWSID %in% cook_pwsids)
+svc_areas_cook <- svc_areas %>% filter(PWSID %in% cook_pwsids)
+
+cook_pwsid_crosswalk <- tibble(PWSID = sort(union(cook_pwsids, cook_cws$PWSID))) %>%
+  mutate(
+    in_county_served  = PWSID %in% cook_pwsids,
+    in_boundary_layer = PWSID %in% cook_cws$PWSID
+  )
+```
+
+## Dataset registry
+
+The registry below lists every exported dataset with its tier, the
+pipeline section that creates it, and a short description. To export a
+new dataset, add a row here. The same registry decides what goes into
+the comprehensive `.RData` file (@sec-save-all).
+
+```{r}
+#| label: export-registry
+
+dataset_registry <- tibble::tribble(
+  ~name,                           ~tier,          ~section,     ~description,
+  # Intermediate
+  "cook_cws_raw",                  "intermediate", "boundaries", "Service area boundaries returned by the bounding-box query, before validity repair and clipping",
+  "cook_pwsid_crosswalk",          "intermediate", "sdwis",      "Cook County PWSIDs and how each was identified (COUNTY_SERVED, boundary layer, or both)",
+  "geo_areas_cook",                "intermediate", "sdwis",      "SDWA geographic area records for Cook County systems",
+  "svc_areas_cook",                "intermediate", "sdwis",      "SDWA service area type records for Cook County systems",
+  "ref_codes",                     "intermediate", "sdwis",      "SDWA reference code lookup table used to decode violation and contaminant codes",
+  "lsl_cook_raw",                  "intermediate", "lsl",        "IEPA service line inventory reports for Cook County systems, as reported",
+  "ucmr5_reference",               "intermediate", "ucmr5",      "Health-based reference levels used for UCMR 5 screening",
+  # Detailed
+  "pws_cook",                      "detailed",     "sdwis",      "Cook County public water system inventory (all SDWA fields)",
+  "violations_cook",               "detailed",     "sdwis",      "Decoded SDWA violations and enforcement records for Cook County systems",
+  "lcr_cook",                      "detailed",     "sdwis",      "Lead and Copper Rule sample results for Cook County systems",
+  "cook_lsl_history",              "detailed",     "lsl",        "Standardized service line material inventories, all reporting years",
+  "ucmr5_cook",                    "detailed",     "ucmr5",      "Standardized UCMR 5 results (PFAS and lithium) for Cook County systems",
+  # Analytical
+  "cook_county",                   "analytical",   "boundaries", "Cook County boundary polygon",
+  "cook_cws",                      "analytical",   "boundaries", "Community water system service areas clipped to Cook County",
+  "cook_cws_with_violations",      "analytical",   "ucmr5",      "Service areas joined to violation, lead service line (lsl_*), and UCMR 5 (ucmr5_*) fields",
+  "pws_cook_summary",              "analytical",   "sdwis",      "System attributes joined to violation counts",
+  "cook_lsl_latest",               "analytical",   "lsl",        "Each system's most recent service line inventory",
+  # Summary
+  "violation_summary",             "summary",      "sdwis",      "Violation counts and most recent violation date by system",
+  "lsl_summary_by_year",           "summary",      "lsl",        "Service line material totals across Cook County systems by reporting year",
+  "ucmr5_cook_system_contaminant", "summary",      "ucmr5",      "UCMR 5 results by system and contaminant, with reference-level flags",
+  "ucmr5_system_summary",          "summary",      "ucmr5",      "One-row-per-system UCMR 5 summary"
+)
+```
+
+## Export helpers
+
+Three helpers do the export:
+
+- `gpkg_safe_names()` makes column names unique without regard to case.
+  GeoPackage (SQLite) treats `PWS_Name` and `PWS_NAME` as the same column,
+  and both appear in `cook_cws_with_violations` (one from the boundaries,
+  one from SDWIS). A later duplicate gets a numeric suffix (e.g.
+  `PWS_NAME_1`). Only the exported copies are renamed; the R objects are
+  unchanged.
+- `csv_table()` returns the table to write to CSV: the data itself, or for
+  `sf` objects the attributes plus a representative point (`point_lon`,
+  `point_lat`). `st_point_on_surface()` is used instead of the centroid so
+  that the point always falls inside the polygon.
+- `export_dataset()` writes one dataset to CSV and to the GeoPackage
+  (replacing any earlier layer of the same name) and returns one row of
+  metadata for the manifest.
+
+```{r}
+#| label: export-helpers
+
+gpkg_safe_names <- function(nm) {
+  key <- make.unique(tolower(nm), sep = "_")
+  renamed <- key != tolower(nm)
+  nm[renamed] <- paste0(nm[renamed], substring(key[renamed], nchar(nm[renamed]) + 1))
+  nm
+}
+
+csv_table <- function(x) {
+  if (!inherits(x, "sf")) return(x)
+  pts <- suppressWarnings(st_point_on_surface(st_geometry(st_transform(x, 4326))))
+  xy  <- t(vapply(seq_along(pts), function(i) {
+    if (st_is_empty(pts[[i]])) c(NA_real_, NA_real_) else st_coordinates(pts[[i]])[1, 1:2]
+  }, numeric(2)))
+  st_drop_geometry(x) %>%
+    mutate(point_lon = xy[, 1], point_lat = xy[, 2])
+}
+
+export_dataset <- function(x, name, tier) {
+  x <- if (inherits(x, "sf")) x else as.data.frame(x)
+
+  attr_cols <- setdiff(names(x), if (inherits(x, "sf")) attr(x, "sf_column"))
+  names(x)[match(attr_cols, names(x))] <- gpkg_safe_names(attr_cols)
+
+  csv_path <- file.path(out_csv_dir, paste0(name, ".csv"))
+  csv_out  <- csv_table(x)
+  write_csv(csv_out, csv_path, na = "")
+
+  st_write(x, out_gpkg_path, layer = name, delete_layer = TRUE, quiet = TRUE)
+
+  tibble(
+    name          = name,
+    tier          = tier,
+    n_rows        = nrow(x),
+    n_columns     = ncol(csv_out),
+    geometry_type = if (inherits(x, "sf")) paste(unique(as.character(st_geometry_type(x))), collapse = "/") else "none",
+    crs           = if (inherits(x, "sf")) st_crs(x)$input else NA_character_,
+    csv_file      = csv_path,
+    gpkg_layer    = name
+  )
+}
+```
+
+## Write datasets
+
+The chunk below exports every registry dataset that exists in this run.
+Any dataset that was not created (for example, because a section was
+skipped) is reported and left out rather than stopping the export. The
+GeoPackage is rebuilt from scratch each run so that it never holds stale
+layers from an earlier run.
+
+```{r}
+#| label: export-datasets
+
+pipeline_env <- environment()
+
+dataset_available <- vapply(dataset_registry$name, exists, logical(1),
+                            envir = pipeline_env, inherits = FALSE)
+if (any(!dataset_available)) {
+  message("Not exported (object not created in this run): ",
+          paste(dataset_registry$name[!dataset_available], collapse = ", "))
+}
+datasets_to_export <- dataset_registry[dataset_available, ]
+
+if (file.exists(out_gpkg_path)) file.remove(out_gpkg_path)
+
+export_log <- purrr::pmap_dfr(
+  list(datasets_to_export$name, datasets_to_export$tier),
+  function(name, tier) {
+    message("Exporting ", name, " (", tier, ")")
+    export_dataset(get(name, envir = pipeline_env), name, tier)
+  }
+)
+```
+
+## Manifest and data dictionary
+
+Two documentation tables are written alongside the datasets, both as CSV
+and as GeoPackage layers:
+
+- **`dataset_manifest`**: one row per exported dataset, with its tier,
+  source section, description, size, geometry type, and file locations.
+- **`data_dictionary`**: one row per column of every exported dataset,
+  with its R class and the share of missing values.
+
+```{r}
+#| label: export-manifest-dictionary
+
+dataset_manifest <- datasets_to_export %>%
+  left_join(export_log, by = c("name", "tier")) %>%
+  mutate(exported = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"))
+
+data_dictionary <- purrr::map_dfr(datasets_to_export$name, function(name) {
+  x <- get(name, envir = pipeline_env)
+  if (inherits(x, "sf")) x <- st_drop_geometry(x)
+  tibble(
+    dataset     = name,
+    column      = names(x),
+    r_class     = vapply(x, function(col) paste(class(col), collapse = "/"), character(1)),
+    pct_missing = vapply(x, function(col) round(100 * mean(is.na(col)), 1), numeric(1))
+  )
+}) %>%
+  left_join(select(dataset_registry, dataset = name, tier), by = "dataset") %>%
+  relocate(tier, .after = dataset)
+
+write_csv(dataset_manifest, file.path(out_csv_dir, "dataset_manifest.csv"), na = "")
+write_csv(data_dictionary,  file.path(out_csv_dir, "data_dictionary.csv"),  na = "")
+st_write(as.data.frame(dataset_manifest), out_gpkg_path, layer = "dataset_manifest",
+         delete_layer = TRUE, quiet = TRUE)
+st_write(as.data.frame(data_dictionary),  out_gpkg_path, layer = "data_dictionary",
+         delete_layer = TRUE, quiet = TRUE)
+
+print(count(dataset_manifest, tier, name = "n_datasets"))
+message("Exported ", nrow(dataset_manifest), " datasets to ", out_csv_dir, "/ and ",
+        out_gpkg_path, " (", round(file.size(out_gpkg_path) / 1024^2, 1), " MB)")
+```
+
+# Save R Data Files {#sec-save}
+
+Two `.RData` files are written: a lightweight one loaded by the rendered
+brief, and a comprehensive one holding every exported dataset.
+
+## Essential objects for rendering
 
 Only the objects referenced by `drinking_water.qmd`'s evaluated
 (`eval: true`) chunks are persisted, so the `.RData` file stays small and
@@ -1241,13 +1441,7 @@ the rendered brief depends only on what it needs:
 | `cook_cws_with_violations` | `sf` polygons of community water system service areas joined to the system-level SDWA violation summary, each system's most recent IEPA lead service line inventory (`lsl_*` fields), and its UCMR 5 summary (`ucmr5_*` fields). This is the main data source for the brief's Analysis section, including the interactive map (fill, hover labels, and the derived violation-density measure computed in the brief). |
 | `ucmr5_cook_system_contaminant` | UCMR 5 results summarized by system and contaminant, used for the brief's contaminant-level UCMR 5 summary table. |
 
-All other intermediate and raw objects (`pws_cook`, `violations_cook`,
-`lcr_cook`, `geo_areas`, `svc_areas`, `ref_codes`, `cook_cws`,
-`cook_lsl_history`, `cook_lsl_latest`, etc.) remain available through the CSV, GeoPackage,
-and Shapefile outputs written above, but are intentionally excluded from
-the `.RData` file the brief loads at render time.
-
-The final chunk saves these objects with `xz` compression.
+The chunk below saves these objects with `xz` compression.
 
 ```{r}
 #| label: save-rdata
@@ -1259,85 +1453,52 @@ message("Saved essential rendering data (cook_county, cook_cws_with_violations, 
         "ucmr5_cook_system_contaminant) to ", out_rdata_path)
 ```
 
-## Save all processed Cook County data {#sec-save-all}
+## Comprehensive data file {#sec-save-all}
 
-The lightweight file above holds only what the brief renders. For further
-analysis, the next chunk saves a second, more complete `.RData` file
-(`data/drinking_water_dataprep_all.RData`) that holds every processed
-Cook County object the pipeline creates, so that the analysis data can be
-loaded in a single step without reading the individual CSV and spatial
-outputs:
+`data/drinking_water_dataprep_all.RData` holds every dataset in the
+registry (@sec-export), across all four tiers, as native R objects: `sf`
+objects keep their geometry, and dates, factors, and logical columns keep
+their types. It also holds:
 
-| Object | Section | Description |
-|--------|---------|-------------|
-| `cook_county` | @sec-boundaries | Cook County boundary (`sf`) |
-| `cook_cws` | @sec-boundaries | Community water system service areas clipped to Cook County (`sf`) |
-| `cook_cws_with_violations` | @sec-boundaries–@sec-ucmr5 | Service areas with violation, lead service line, and UCMR 5 fields (`sf`) |
-| `cook_pwsids` | @sec-sdwis | `PWSID`s identified as serving Cook County via `COUNTY_SERVED` |
-| `pws_cook` | @sec-sdwis | Cook County public water system inventory |
-| `violations_cook` | @sec-sdwis | Decoded SDWA violations for Cook County systems |
-| `lcr_cook` | @sec-sdwis | Lead and Copper Rule sample results |
-| `violation_summary` | @sec-sdwis | Violation counts by system |
-| `pws_cook_summary` | @sec-sdwis | System attributes joined to violation counts |
-| `cook_lsl_history` | @sec-lsl | IEPA service line inventories, all reporting years |
-| `cook_lsl_latest` | @sec-lsl | Each system's most recent service line inventory |
-| `lsl_summary_by_year` | @sec-lsl | Service line totals by reporting year |
-| `ucmr5_cook` | @sec-ucmr5 | Standardized UCMR 5 results for Cook County systems |
-| `ucmr5_cook_system_contaminant` | @sec-ucmr5 | UCMR 5 results by system and contaminant, with reference-level flags |
-| `ucmr5_system_summary` | @sec-ucmr5 | One-row-per-system UCMR 5 summary |
-| `ucmr5_reference` | @sec-ucmr5 | Health-based reference levels used for UCMR 5 screening |
+- `dataset_registry`, `dataset_manifest`, and `data_dictionary`, which
+  describe the datasets.
+- `dataprep_info`, a list recording when the file was created, the source
+  files used, and the R and package versions.
+
+Loading this one file restores the full set of analysis data without
+re-running the pipeline or reading the CSV and GeoPackage outputs:
+
+```r
+load("data/drinking_water_dataprep_all.RData")
+dataset_manifest   # what is available, by tier
+```
 
 Large statewide and national source tables (`pws`, `violations`,
-`geo_areas`, `svc_areas`, `lcr_samples`, `ref_codes`, `lsl_raw`,
-`ucmr5_raw`) are left out because they can be re-read from the downloaded
-source files. If any listed object was not created (for example, because a
-section was skipped), the chunk reports it and saves the rest instead of
-failing. A small `dataprep_info` list records when the file was created
-and which objects it holds.
+`geo_areas`, `svc_areas`, `lcr_samples`, `lsl_raw`, `ucmr5_raw`) are left
+out because they can be re-read from the downloaded source files.
 
 ```{r}
 #| label: save-rdata-all
 
-out_rdata_all_path <- "data/drinking_water_dataprep_all.RData"
-
-all_objects <- c(
-  # Service area boundaries
-  "cook_county", "cook_cws", "cook_cws_with_violations",
-  # SDWIS/ECHO violations and compliance
-  "cook_pwsids", "pws_cook", "violations_cook", "lcr_cook",
-  "violation_summary", "pws_cook_summary",
-  # IEPA lead service line inventories
-  "cook_lsl_history", "cook_lsl_latest", "lsl_summary_by_year",
-  # UCMR 5 (PFAS and lithium)
-  "ucmr5_cook", "ucmr5_cook_system_contaminant", "ucmr5_system_summary",
-  "ucmr5_reference"
-)
-
-## Look objects up in the environment this chunk runs in (exists() called
-## through vapply() would otherwise search vapply's own frame).
-pipeline_env      <- environment()
-available_objects <- all_objects[vapply(all_objects, exists, logical(1),
-                                        envir = pipeline_env, inherits = FALSE)]
-missing_objects   <- setdiff(all_objects, available_objects)
-
-if (length(missing_objects) > 0) {
-  message("Not saved (object not created in this run): ",
-          paste(missing_objects, collapse = ", "))
-}
-
 dataprep_info <- list(
   created       = Sys.time(),
-  objects       = available_objects,
-  missing       = missing_objects,
+  objects       = datasets_to_export$name,
+  missing       = dataset_registry$name[!dataset_available],
   sdwa_source   = zip_path,
   lsl_source    = if (exists("lsl_inventory_path")) lsl_inventory_path else NA_character_,
   ucmr5_source  = if (exists("ucmr5_zip_path")) ucmr5_zip_path else NA_character_,
-  r_version     = R.version.string
+  csv_dir       = out_csv_dir,
+  gpkg_path     = out_gpkg_path,
+  r_version     = R.version.string,
+  packages      = vapply(c("dplyr", "tidyr", "readr", "sf", "httr2", "tigris"),
+                         function(p) as.character(packageVersion(p)), character(1))
 )
 
-save(list = c(available_objects, "dataprep_info"),
+save(list = c(datasets_to_export$name, "dataset_registry", "dataset_manifest",
+              "data_dictionary", "dataprep_info"),
      file = out_rdata_all_path, envir = pipeline_env, compress = "xz")
 
-message("Saved ", length(available_objects), " objects to ", out_rdata_all_path,
+message("Saved ", nrow(datasets_to_export), " datasets plus manifest, dictionary, and ",
+        "run information to ", out_rdata_all_path,
         " (", round(file.size(out_rdata_all_path) / 1024^2, 1), " MB)")
 ```
